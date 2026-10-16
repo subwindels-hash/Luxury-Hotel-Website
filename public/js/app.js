@@ -646,12 +646,17 @@
           </div>
         ` : ''}
 
-        <div style="display:flex;justify-content:flex-end;gap:0.75rem;">
+        <div style="display:flex;justify-content:flex-end;gap:0.75rem;flex-wrap:wrap;">
           <button type="button" class="btn-secondary" onclick="window.AureliaApp.closeRoomDetailModal()">Close</button>
           ${av && av.available ? `
             <button type="button" class="btn-primary" onclick="window.AureliaApp.closeRoomDetailModal(); window.AureliaApp.initiateBookingForRooms([${r.id}]);">
               Book This Room (#${escapeHtml(r.roomNumber)})
             </button>
+          ` : `
+            <button type="button" class="btn-primary" onclick="window.AureliaApp.promptJoinRoomWaitlist(${r.id}, '${escapeHtml(r.roomNumber)}')">
+              🔔 Join Priority Waitlist for These Dates
+            </button>
+          `}
           ` : ''}
         </div>
       `;
@@ -823,6 +828,7 @@
           children: state.searchParams.children,
           selectedAddons: state.checkoutState.selectedAddons,
           promoCode: state.checkoutState.promoCode,
+          redeemLoyaltyPoints: Boolean(state.checkoutState.redeemLoyaltyPoints),
           paymentPlan: state.checkoutState.paymentPlan,
           currency: state.currency
         })
@@ -959,6 +965,16 @@
                 </div>
               </div>
 
+              <!-- LoyaltyPointsCheckoutRedemptionModule UI -->
+              ${state.currentUser && Number(state.currentUser.loyalty_points || 0) >= 10 ? `
+                <div style="margin-top:0.85rem;padding:0.75rem;background:var(--gold-pale);border:1px solid var(--gold-primary);border-radius:6px;font-size:0.8rem;">
+                  <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-weight:700;">
+                    <input type="checkbox" ${state.checkoutState.redeemLoyaltyPoints ? 'checked' : ''} onchange="window.AureliaApp.toggleCheckoutLoyaltyRedemption(this.checked)" />
+                    <span>✨ Redeem ${state.currentUser.loyalty_points.toLocaleString()} Aurélia Loyalty Points (10 pts = $1.00 USD Credit)</span>
+                  </label>
+                </div>
+              ` : ''}
+
               <div style="margin-top:1rem;padding:0.75rem;background:#ffffff;border-radius:6px;border:1px solid var(--border-subtle);font-size:0.76rem;color:var(--text-muted);">
                 <strong>Cancellation &amp; Refund Guarantee:</strong><br />
                 Complimentary cancellation up to ${state.settings.free_cancellation_hours || 48} hours prior to check-in (15:00). Availability is re-verified atomically before payment capture.
@@ -1077,6 +1093,43 @@
     await refreshCheckoutPricing();
   }
 
+  async function toggleCheckoutLoyaltyRedemption(isChecked) {
+    state.checkoutState.redeemLoyaltyPoints = Boolean(isChecked);
+    await refreshCheckoutPricing();
+  }
+
+  async function promptJoinRoomWaitlist(roomId, roomNumber) {
+    const guestName = state.currentUser
+      ? `${state.currentUser.first_name} ${state.currentUser.last_name}`
+      : prompt(`Enter your full name to join the Priority Waitlist for Room #${roomNumber}:`, 'Lady Eleanor Vance');
+    if (!guestName) return;
+    const guestEmail = state.currentUser
+      ? state.currentUser.email
+      : prompt('Enter your email address for instant availability release alerts:', 'eleanor.vance@example.com');
+    if (!guestEmail) return;
+
+    try {
+      const res = await apiFetch('/api/waitlist', {
+        method: 'POST',
+        body: JSON.stringify({
+          roomId,
+          guestName,
+          guestEmail,
+          checkIn: state.searchParams.checkIn,
+          checkOut: state.searchParams.checkOut,
+          adults: state.searchParams.adults,
+          children: state.searchParams.children,
+          notes: `Priority alert requested for Room #${roomNumber}`
+        })
+      });
+      alert(
+        `✓ Priority Waitlist Confirmed!\nReference: ${res.waitlistEntry.waitlist_reference}\nYou will be notified immediately if Room #${roomNumber} becomes available for ${state.searchParams.checkIn} → ${state.searchParams.checkOut}.`
+      );
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   function updateCheckoutPriceSummaryDOM() {
     const box = document.getElementById('checkoutPriceBreakdownBox');
     if (!box || !state.checkoutState.pricing) return;
@@ -1106,6 +1159,13 @@
         <div class="price-line" style="color:var(--emerald-ok);font-weight:700;">
           <span>Promo (${escapeHtml(p.appliedPromo.code)})</span>
           <span>-${formatMoney(p.discountAmount)}</span>
+        </div>
+      ` : ''}
+
+      ${p.loyaltyDiscountAmount > 0 ? `
+        <div class="price-line" style="color:var(--emerald-ok);font-weight:700;">
+          <span>Loyalty Points Redeemed (${p.loyaltyPointsRedeemed} pts)</span>
+          <span>-${formatMoney(p.loyaltyDiscountAmount)}</span>
         </div>
       ` : ''}
 
@@ -1187,6 +1247,7 @@
           specialRequests: document.getElementById('chkSpecialRequests').value,
           selectedAddons: state.checkoutState.selectedAddons,
           promoCode: state.checkoutState.promoCode,
+          redeemLoyaltyPoints: Boolean(state.checkoutState.redeemLoyaltyPoints),
           paymentMethod: state.checkoutState.paymentMethod,
           paymentPlan: state.checkoutState.paymentPlan,
           paymentToken,
@@ -1395,7 +1456,10 @@
               Booking Reference: <code>${escapeHtml(res.booking_reference)}</code>
             </h3>
           </div>
-          <div style="display:flex;gap:0.5rem;">
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <a href="/api/bookings/${encodeURIComponent(res.booking_reference)}/invoice?format=html" target="_blank" class="btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center;">
+              🖨️ Official Tax &amp; Folio Invoice
+            </a>
             <button type="button" class="btn-secondary" onclick='window.AureliaApp.showConfirmationModal(${JSON.stringify(res).replace(/'/g, "&#39;")})'>
               View Printable Invoice
             </button>
@@ -1991,9 +2055,43 @@
     await loadAdminTab(tabName);
   }
 
+  let adminEventSource = null;
+
+  function ensureAdminSseConnected() {
+    if (adminEventSource || typeof window.EventSource === 'undefined') return;
+    try {
+      adminEventSource = new window.EventSource('/api/admin/events');
+      adminEventSource.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(evt.data);
+          const tickerEl = document.getElementById('adminLiveSseTicker');
+          if (tickerEl) {
+            if (data.type === 'CONNECTED') {
+              const latest = (data.recentEvents && data.recentEvents[0]) || null;
+              tickerEl.innerHTML = latest
+                ? `🟢 <strong>Live Front-Desk SSE Stream Active</strong> — Latest: <code>${escapeHtml(latest.type)}</code> ${escapeHtml(latest.title)} (${escapeHtml(latest.message)})`
+                : `🟢 <strong>Live Front-Desk SSE Stream Active</strong> — Listening for real-time reservations, waitlist alerts &amp; housekeeping updates...`;
+            } else {
+              tickerEl.innerHTML = `🟢 <strong>Live Event [${escapeHtml(data.type)}]</strong>: ${escapeHtml(data.title)} — ${escapeHtml(data.message)}`;
+            }
+          }
+        } catch (_) {}
+      };
+    } catch (_) {}
+  }
+
   async function loadAdminTab(tabName) {
     const container = document.getElementById('adminTabContent');
     if (!container) return;
+
+    ensureAdminSseConnected();
+    if (!document.getElementById('adminLiveSseTicker')) {
+      const ticker = document.createElement('div');
+      ticker.id = 'adminLiveSseTicker';
+      ticker.style.cssText = 'background:#0b132b;color:#f8fafc;padding:0.6rem 1rem;border-radius:6px;margin-bottom:1.1rem;font-size:0.8rem;border-left:4px solid #c5a059;';
+      ticker.innerHTML = '🟢 <strong>Live Front-Desk SSE Stream Active</strong> — Connected to <code>/api/admin/events</code>';
+      container.parentNode.insertBefore(ticker, container);
+    }
 
     try {
       if (tabName === 'overview') {
@@ -2109,9 +2207,10 @@
   }
 
   async function renderAdminReservationsTab(container) {
-    const [resData, catData] = await Promise.all([
+    const [resData, catData, waitlistData] = await Promise.all([
       apiFetch('/api/admin/reservations'),
-      apiFetch('/api/catalogue')
+      apiFetch('/api/catalogue'),
+      apiFetch('/api/admin/waitlist').catch(() => ({ waitlist: [] }))
     ]);
 
     container.innerHTML = `
@@ -2242,6 +2341,7 @@
                 </td>
                 <td>
                   <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+                    <a href="/api/bookings/${encodeURIComponent(r.booking_reference)}/invoice?format=html" target="_blank" class="nearby-date-btn" style="text-decoration:none;">Invoice</a>
                     ${r.status === 'confirmed' ? `<button type="button" class="nearby-date-btn" style="border-color:var(--emerald-ok);color:var(--emerald-ok);" onclick="window.AureliaApp.adminUpdateBookingStatus('${escapeHtml(r.booking_reference)}', 'checked_in')">Check-In</button>` : ''}
                     ${r.status === 'checked_in' ? `<button type="button" class="nearby-date-btn" onclick="window.AureliaApp.adminUpdateBookingStatus('${escapeHtml(r.booking_reference)}', 'checked_out')">Check-Out</button>` : ''}
                     ${r.status !== 'cancelled' && r.amount_paid < (r.grandFolioTotal || r.total_amount) ? `<button type="button" class="nearby-date-btn" style="border-color:#2563eb;color:#2563eb;" onclick="window.AureliaApp.adminConfirmBalancePayment('${escapeHtml(r.booking_reference)}')">Confirm Payment</button>` : ''}
@@ -2253,6 +2353,35 @@
             `).join('')}
           </tbody>
         </table>
+      </div>
+
+      <!-- AutomatedWaitlistAndRoomAlertModule Admin Queue -->
+      <div style="margin-top:2rem;">
+        <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.65rem;">Priority Room Waitlist &amp; Automated Release Alerts (${(waitlistData.waitlist || []).length})</h4>
+        <div class="data-table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Waitlist Ref</th>
+                <th>Guest</th>
+                <th>Target Room / Category</th>
+                <th>Requested Dates</th>
+                <th>Alert Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(waitlistData.waitlist || []).length === 0 ? '<tr><td colspan="5">No active priority waitlist entries.</td></tr>' : waitlistData.waitlist.map((w) => `
+                <tr>
+                  <td><code>${escapeHtml(w.waitlist_reference)}</code></td>
+                  <td><strong>${escapeHtml(w.guest_name)}</strong> (${escapeHtml(w.guest_email)})</td>
+                  <td>${w.room_number ? `Room #${escapeHtml(w.room_number)}` : escapeHtml(w.category_name || 'Any Suite')}</td>
+                  <td>${escapeHtml(w.check_in)} &rarr; ${escapeHtml(w.check_out)}</td>
+                  <td><span class="status-pill ${w.status === 'notified' ? 'confirmed' : 'checked_in'}">${escapeHtml(w.status)}</span> ${w.notified_at ? `(${escapeHtml(w.notified_at)})` : ''}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
       </div>
     `;
   }
@@ -2471,7 +2600,63 @@
           </tbody>
         </table>
       </div>
+
+      <!-- HousekeepingStaffAssignmentAndChecklistModule UI -->
+      <div class="kpi-card" style="margin-top:1.75rem;">
+        <h4 style="font-family:var(--font-serif);font-size:1.3rem;margin-bottom:0.65rem;">Housekeeping Attendant Assignment &amp; Suite Inspection Checklist</h4>
+        <form onsubmit="window.AureliaApp.handleHousekeepingChecklistSubmit(event)" class="search-grid">
+          <div class="search-field">
+            <label>Physical Room</label>
+            <select id="hkChkRoomId" required>
+              ${catData.rooms.map((r) => `<option value="${r.id}">#${escapeHtml(r.roomNumber)} — ${escapeHtml(r.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="search-field">
+            <label>Assigned Attendant</label>
+            <input type="text" id="hkChkAttendant" value="Marie-Claire Laurent" required />
+          </div>
+          <div class="search-field">
+            <label>Target Readiness Status</label>
+            <select id="hkChkStatus">
+              <option value="clean_inspected">✓ Clean &amp; Inspected</option>
+              <option value="turndown_complete">✓ Evening Turndown Complete</option>
+              <option value="in_progress">🛠 In Progress</option>
+              <option value="dirty_turnover">⚠ Dirty / Turnover Needed</option>
+            </select>
+          </div>
+          <div class="search-field">
+            <label>Inspection Notes (Linen / Marble / Minibar / Florals)</label>
+            <input type="text" id="hkChkNotes" value="Quagliotti linens changed, Calacatta marble sanitised, Krug minibar restocked" />
+          </div>
+          <div class="search-field">
+            <button type="submit" class="btn-primary" style="width:100%;">Submit Inspection Checklist</button>
+          </div>
+        </form>
+      </div>
     `;
+  }
+
+  async function handleHousekeepingChecklistSubmit(e) {
+    e.preventDefault();
+    try {
+      const roomId = Number(document.getElementById('hkChkRoomId').value);
+      await apiFetch(`/api/admin/rooms/${roomId}/housekeeping-checklist`, {
+        method: 'POST',
+        body: JSON.stringify({
+          attendantName: document.getElementById('hkChkAttendant').value,
+          housekeepingStatus: document.getElementById('hkChkStatus').value,
+          notes: document.getElementById('hkChkNotes').value,
+          linenChanged: true,
+          marbleSanitised: true,
+          minibarRestocked: true,
+          floralsRefreshed: true,
+          supervisorVerified: true
+        })
+      });
+      await loadAdminTab('rooms');
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   async function handleAddRoomSubmit(e) {
@@ -3234,6 +3419,8 @@ END:VCALENDAR</textarea>
     setCheckoutPaymentPlan,
     setCheckoutPaymentMethod,
     applyCheckoutPromo,
+    toggleCheckoutLoyaltyRedemption,
+    promptJoinRoomWaitlist,
     submitAtomicReservation,
     showConfirmationModal,
     closeConfirmationModal,
@@ -3261,6 +3448,7 @@ END:VCALENDAR</textarea>
     handleAddCategorySubmit,
     saveRoomQuickEdit,
     saveRoomHousekeepingStatus,
+    handleHousekeepingChecklistSubmit,
     deletePhysicalRoom,
     handleCreateMaintenanceSubmit,
     removeMaintenanceBlock,

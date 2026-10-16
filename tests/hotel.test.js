@@ -950,4 +950,170 @@ describe('Maison Aurélia Luxury Hotel & Online Reservation Platform — End-to-
     assert.equal(handshake.status, 200);
     assert.equal(handshake.data.status, 'verified');
   });
+
+  it('17. Enrolls guests on Priority Room Waitlist and automatically dispatches release alerts when conflicting reservations cancel', async () => {
+    const adminLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'admin@maisonaurelia.luxury',
+      password: 'AureliaAdmin!2026'
+    });
+    const adminToken = adminLogin.data.token;
+
+    const cat = await reqJson('GET', '/api/catalogue');
+    const room401 = cat.data.rooms.find((r) => r.roomNumber === '401');
+
+    // 1. First guest reserves Room #401 for 2027-08-10 -> 2027-08-13
+    const firstBook = await reqJson('POST', '/api/bookings', {
+      roomIds: [room401.id],
+      checkIn: '2027-08-10',
+      checkOut: '2027-08-13',
+      adults: 2,
+      guestFirstName: 'Primary',
+      guestLastName: 'Holder',
+      guestEmail: 'primary.holder@example.com',
+      guestPhone: '+41 22 700 1111',
+      paymentMethod: 'pay_at_hotel'
+    });
+    assert.equal(firstBook.status, 201);
+    const ref = firstBook.data.bookingReference;
+
+    // 2. Second guest joins Priority Waitlist for Room #401 on 2027-08-10 -> 2027-08-13
+    const wlRes = await reqJson('POST', '/api/waitlist', {
+      roomId: room401.id,
+      guestName: 'Duchess Sofia Rossi',
+      guestEmail: 'sofia.rossi@example.com',
+      guestPhone: '+39 02 1234 5678',
+      checkIn: '2027-08-10',
+      checkOut: '2027-08-13',
+      adults: 2
+    });
+    assert.equal(wlRes.status, 201);
+    assert.equal(wlRes.data.waitlistEntry.status, 'waiting');
+    const wlRef = wlRes.data.waitlistEntry.waitlist_reference;
+
+    // 3. First guest cancels their reservation -> Waitlist entry must automatically transition to 'notified'
+    const cancelRes = await reqJson('POST', `/api/bookings/${ref}/cancel`, {
+      email: 'primary.holder@example.com',
+      reason: 'Schedule change'
+    });
+    assert.equal(cancelRes.status, 200);
+    assert.equal(cancelRes.data.notifiedWaitlist.length, 1);
+    assert.equal(cancelRes.data.notifiedWaitlist[0].waitlist_reference, wlRef);
+    assert.equal(cancelRes.data.notifiedWaitlist[0].status, 'notified');
+
+    // Verify in Admin Waitlist endpoint
+    const adminWl = await reqJson('GET', '/api/admin/waitlist', null, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(adminWl.status, 200);
+    const matched = adminWl.data.waitlist.find((w) => w.waitlist_reference === wlRef);
+    assert.equal(matched.status, 'notified');
+  });
+
+  it('18. Redeems VIP Loyalty Points at checkout for instant credit and generates Printable Official Tax & Folio Invoices', async () => {
+    // Sign in as VIP Guest (Elena Rostova has 18,400 loyalty points seeded)
+    const guestLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'elena.rostova@example.com',
+      password: 'GuestPass!2026'
+    });
+    assert.equal(guestLogin.status, 200);
+    const guestToken = guestLogin.data.token;
+
+    const cat = await reqJson('GET', '/api/catalogue');
+    const room501 = cat.data.rooms.find((r) => r.roomNumber === '501');
+
+    // 1. Calculate pricing with redeemLoyaltyPoints: true
+    const priceRes = await reqJson(
+      'POST',
+      '/api/pricing/calculate',
+      {
+        roomIds: [room501.id],
+        checkIn: '2027-10-05',
+        checkOut: '2027-10-08',
+        adults: 2,
+        redeemLoyaltyPoints: true
+      },
+      { Authorization: `Bearer ${guestToken}` }
+    );
+    assert.equal(priceRes.status, 200);
+    assert.ok(priceRes.data.pricing.loyaltyPointsRedeemed > 0);
+    assert.ok(priceRes.data.pricing.loyaltyDiscountAmount > 0);
+
+    // 2. Confirm reservation with redeemLoyaltyPoints: true
+    const bookRes = await reqJson(
+      'POST',
+      '/api/bookings',
+      {
+        roomIds: [room501.id],
+        checkIn: '2027-10-05',
+        checkOut: '2027-10-08',
+        adults: 2,
+        guestFirstName: 'Elena',
+        guestLastName: 'Rostova',
+        guestEmail: 'elena.rostova@example.com',
+        guestPhone: '+44 20 7946 0921',
+        redeemLoyaltyPoints: true,
+        paymentMethod: 'pay_at_hotel'
+      },
+      { Authorization: `Bearer ${guestToken}` }
+    );
+    assert.equal(bookRes.status, 201);
+    assert.ok(bookRes.data.reservation.loyalty_points_redeemed > 0);
+    assert.ok(bookRes.data.reservation.loyalty_discount_amount > 0);
+
+    // 3. Generate Printable Official Tax & Folio Invoice (JSON & HTML formats)
+    const ref = bookRes.data.bookingReference;
+    const invJson = await reqJson('GET', `/api/bookings/${ref}/invoice`);
+    assert.equal(invJson.status, 200);
+    assert.equal(invJson.data.bookingReference, ref);
+    assert.ok(invJson.data.html.includes('OFFICIAL TAX &amp; FOLIO INVOICE'));
+
+    const invHtmlRes = await fetch(`${baseUrl}/api/bookings/${ref}/invoice?format=html`);
+    assert.equal(invHtmlRes.status, 200);
+    assert.ok(invHtmlRes.headers.get('content-type').includes('text/html'));
+  });
+
+  it('19. Records Housekeeping Attendant Inspection Checklists and streams Real-Time Front-Desk SSE Events', async () => {
+    const adminLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'admin@maisonaurelia.luxury',
+      password: 'AureliaAdmin!2026'
+    });
+    const adminToken = adminLogin.data.token;
+
+    const cat = await reqJson('GET', '/api/catalogue');
+    const room201 = cat.data.rooms.find((r) => r.roomNumber === '201');
+
+    // 1. Submit Housekeeping Attendant Checklist
+    const hkRes = await reqJson(
+      'POST',
+      `/api/admin/rooms/${room201.id}/housekeeping-checklist`,
+      {
+        attendantName: 'Marie-Claire Laurent',
+        housekeepingStatus: 'turndown_complete',
+        linenChanged: true,
+        marbleSanitised: true,
+        minibarRestocked: true,
+        floralsRefreshed: true,
+        supervisorVerified: true,
+        notes: 'Evening turndown with Grasse jasmine mist complete'
+      },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(hkRes.status, 201);
+    assert.equal(hkRes.data.checklist.attendant_name, 'Marie-Claire Laurent');
+    assert.equal(hkRes.data.room.housekeeping_status, 'turndown_complete');
+
+    // 2. Verify Housekeeping Checklists log
+    const hkList = await reqJson('GET', '/api/admin/housekeeping', null, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(hkList.status, 200);
+    assert.ok(hkList.data.checklists.length >= 1);
+
+    // 3. Verify Real-Time Front-Desk SSE Event Feed
+    const sseRecent = await reqJson('GET', '/api/admin/events/recent', null, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(sseRecent.status, 200);
+    assert.ok(sseRecent.data.events.some((e) => e.type === 'HOUSEKEEPING_UPDATED'));
+  });
 });

@@ -278,6 +278,8 @@ function createSchema(db) {
       extras_subtotal REAL NOT NULL DEFAULT 0,
       discount_amount REAL NOT NULL DEFAULT 0,
       promo_code TEXT DEFAULT '',
+      loyalty_points_redeemed INTEGER NOT NULL DEFAULT 0,
+      loyalty_discount_amount REAL NOT NULL DEFAULT 0,
       tax_amount REAL NOT NULL DEFAULT 0,
       service_fee_amount REAL NOT NULL DEFAULT 0,
       city_levy_amount REAL NOT NULL DEFAULT 0,
@@ -453,6 +455,41 @@ function createSchema(db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS waitlist_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      waitlist_reference TEXT NOT NULL UNIQUE,
+      room_id INTEGER REFERENCES rooms(id) ON DELETE CASCADE,
+      category_id INTEGER REFERENCES room_categories(id) ON DELETE CASCADE,
+      guest_name TEXT NOT NULL,
+      guest_email TEXT NOT NULL,
+      guest_phone TEXT DEFAULT '',
+      check_in TEXT NOT NULL,
+      check_out TEXT NOT NULL,
+      adults INTEGER NOT NULL DEFAULT 2,
+      children INTEGER NOT NULL DEFAULT 0,
+      notes TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting', 'notified', 'converted', 'cancelled')),
+      notified_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (check_in < check_out)
+    );
+
+    CREATE TABLE IF NOT EXISTS housekeeping_checklists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      room_number TEXT NOT NULL,
+      attendant_name TEXT NOT NULL,
+      housekeeping_status TEXT NOT NULL,
+      linen_changed INTEGER NOT NULL DEFAULT 1,
+      marble_sanitised INTEGER NOT NULL DEFAULT 1,
+      minibar_restocked INTEGER NOT NULL DEFAULT 1,
+      florals_refreshed INTEGER NOT NULL DEFAULT 1,
+      supervisor_verified INTEGER NOT NULL DEFAULT 1,
+      notes TEXT DEFAULT '',
+      inspected_by TEXT DEFAULT 'Executive Housekeeper',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_res_rooms_lookup ON reservation_rooms(room_id, status, check_in, check_out);
     CREATE INDEX IF NOT EXISTS idx_holds_lookup ON room_holds(room_id, status, expires_at, check_in, check_out);
     CREATE INDEX IF NOT EXISTS idx_maint_lookup ON maintenance_blocks(room_id, status, start_date, end_date);
@@ -593,6 +630,11 @@ function createSchema(db) {
       db.exec('ALTER TABLE hotel_settings ADD COLUMN dynamic_yield_enabled INTEGER NOT NULL DEFAULT 1;');
       db.exec('ALTER TABLE hotel_settings ADD COLUMN high_demand_occupancy_threshold REAL NOT NULL DEFAULT 75.0;');
       db.exec('ALTER TABLE hotel_settings ADD COLUMN high_demand_multiplier REAL NOT NULL DEFAULT 1.15;');
+    }
+    const resCols = db.prepare("PRAGMA table_info('reservations')").all();
+    if (!resCols.some((c) => c.name === 'loyalty_points_redeemed')) {
+      db.exec('ALTER TABLE reservations ADD COLUMN loyalty_points_redeemed INTEGER NOT NULL DEFAULT 0;');
+      db.exec('ALTER TABLE reservations ADD COLUMN loyalty_discount_amount REAL NOT NULL DEFAULT 0;');
     }
   } catch (_) {}
 }

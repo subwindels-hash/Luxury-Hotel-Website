@@ -36,8 +36,12 @@ const {
   removeFolioCharge,
   submitGuestReview,
   bookFacilitySlot,
-  cancelFacilitySlot
+  cancelFacilitySlot,
+  joinRoomWaitlist,
+  generatePrintableTaxInvoice,
+  submitHousekeepingChecklist
 } = require('../services/bookingService');
+const { registerSseClient, getRecentFrontDeskEvents } = require('../services/sseService');
 const {
   createPaymentToken,
   processPaymentWebhook,
@@ -291,6 +295,7 @@ router.post('/pricing/calculate', (req, res) => {
       children = 0,
       selectedAddons = [],
       promoCode = '',
+      redeemLoyaltyPoints = false,
       paymentPlan = 'full',
       currency = 'USD'
     } = req.body;
@@ -303,6 +308,8 @@ router.post('/pricing/calculate', (req, res) => {
       children,
       selectedAddons,
       promoCode,
+      redeemLoyaltyPoints: Boolean(redeemLoyaltyPoints),
+      userId: req.user ? req.user.id : null,
       paymentPlan,
       currency
     });
@@ -392,6 +399,7 @@ router.post('/bookings', (req, res) => {
       specialRequests = '',
       selectedAddons = [],
       promoCode = '',
+      redeemLoyaltyPoints = false,
       paymentMethod = 'card',
       paymentPlan = 'full',
       paymentToken = '',
@@ -418,6 +426,7 @@ router.post('/bookings', (req, res) => {
       specialRequests,
       selectedAddons,
       promoCode,
+      redeemLoyaltyPoints: Boolean(redeemLoyaltyPoints),
       paymentMethod,
       paymentPlan,
       paymentToken,
@@ -2094,7 +2103,7 @@ router.get('/admin/integrations', requireRoles('finance', 'manager', 'admin'), (
 router.post('/admin/integrations/test', requireRoles('manager', 'admin'), (req, res) => {
   try {
     const result = testCloudAdapterHandshake({
-      adapterId: req.body.adapterId,
+      adapterId: req.body.adapterId || req.body.provider,
       testRecipient: req.body.testRecipient || req.user.email,
       actorId: req.user.id,
       actorRole: req.user.role,
@@ -2105,6 +2114,93 @@ router.post('/admin/integrations/test', requireRoles('manager', 'admin'), (req, 
   } catch (err) {
     res.status(400).json({ error: err.code || 'ADAPTER_TEST_FAILED', message: err.message });
   }
+});
+
+// 1. AutomatedWaitlistAndRoomAlertModule Endpoints
+router.post('/waitlist', (req, res) => {
+  try {
+    const entry = joinRoomWaitlist({
+      roomId: req.body.roomId || null,
+      categoryId: req.body.categoryId || null,
+      guestName: req.body.guestName,
+      guestEmail: req.body.guestEmail,
+      guestPhone: req.body.guestPhone || '',
+      checkIn: req.body.checkIn,
+      checkOut: req.body.checkOut,
+      adults: req.body.adults || 2,
+      children: req.body.children || 0,
+      notes: req.body.notes || '',
+      ipAddress: req.ip
+    });
+    res.status(201).json({ waitlistEntry: entry });
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'WAITLIST_JOIN_FAILED', message: err.message });
+  }
+});
+
+router.get('/admin/waitlist', requireRoles('receptionist', 'manager', 'admin'), (_req, res) => {
+  const db = getDb();
+  const entries = db.prepare(`
+    SELECT w.*, r.room_number, r.name AS room_name, c.name AS category_name
+    FROM waitlist_entries w
+    LEFT JOIN rooms r ON r.id = w.room_id
+    LEFT JOIN room_categories c ON c.id = w.category_id
+    ORDER BY w.id DESC LIMIT 50
+  `).all();
+  res.json({ waitlist: entries });
+});
+
+// 2. PrintableTaxInvoiceAndFolioGeneratorModule Endpoint
+router.get('/bookings/:bookingReference/invoice', (req, res) => {
+  const invoice = generatePrintableTaxInvoice(req.params.bookingReference);
+  if (!invoice) {
+    return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+  }
+  if (req.query.format === 'html') {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(invoice.html);
+  }
+  res.json(invoice);
+});
+
+// 4. HousekeepingStaffAssignmentAndChecklistModule Endpoints
+router.get('/admin/housekeeping', requireRoles('receptionist', 'manager', 'admin'), (_req, res) => {
+  const db = getDb();
+  const checklists = db.prepare('SELECT * FROM housekeeping_checklists ORDER BY id DESC LIMIT 40').all();
+  res.json({ checklists });
+});
+
+router.post('/admin/rooms/:id/housekeeping-checklist', requireRoles('receptionist', 'manager', 'admin'), (req, res) => {
+  try {
+    const result = submitHousekeepingChecklist({
+      roomId: Number(req.params.id),
+      attendantName: req.body.attendantName,
+      housekeepingStatus: req.body.housekeepingStatus || 'clean_inspected',
+      linenChanged: req.body.linenChanged !== false,
+      marbleSanitised: req.body.marbleSanitised !== false,
+      minibarRestocked: req.body.minibarRestocked !== false,
+      floralsRefreshed: req.body.floralsRefreshed !== false,
+      supervisorVerified: req.body.supervisorVerified !== false,
+      notes: req.body.notes || '',
+      inspectedBy: `${req.user.first_name} ${req.user.last_name} (${req.user.role})`,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      actorEmail: req.user.email,
+      ipAddress: req.ip
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'HOUSEKEEPING_CHECKLIST_FAILED', message: err.message });
+  }
+});
+
+// 5. RealTimeServerSentEventsPushModule (SSELiveFrontDeskFeed) Endpoints
+router.get('/admin/events', (req, res) => {
+  registerSseClient(res);
+});
+
+router.get('/admin/events/recent', requireRoles('receptionist', 'finance', 'manager', 'admin'), (_req, res) => {
+  res.json({ events: getRecentFrontDeskEvents() });
 });
 
 module.exports = router;

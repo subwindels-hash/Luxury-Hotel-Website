@@ -16,6 +16,7 @@ const {
 } = require('./paymentService');
 const { sendNotification } = require('./notificationService');
 const { logAudit } = require('./auditService');
+const { broadcastFrontDeskEvent } = require('./sseService');
 
 function generateBookingReference() {
   const year = new Date().getUTCFullYear();
@@ -200,6 +201,7 @@ function confirmReservation({
   specialRequests = '',
   selectedAddons = [],
   promoCode = '',
+  redeemLoyaltyPoints = false,
   paymentMethod = 'card',
   paymentPlan = 'full',
   paymentToken = '',
@@ -311,6 +313,8 @@ function confirmReservation({
       children: reqChildren,
       selectedAddons,
       promoCode,
+      redeemLoyaltyPoints: Boolean(redeemLoyaltyPoints),
+      userId,
       paymentPlan,
       currency
     });
@@ -345,12 +349,14 @@ function confirmReservation({
         status, payment_status, payment_method, payment_plan,
         currency, exchange_rate, room_subtotal, seasonal_adjustment,
         extras_subtotal, discount_amount, promo_code,
+        loyalty_points_redeemed, loyalty_discount_amount,
         tax_amount, service_fee_amount, city_levy_amount,
         total_amount, amount_due_now, amount_paid, refunded_amount,
         hold_token, booking_source, booked_by_staff_id
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         'confirmed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?,
         ?, ?, ?, ?, ?, ?, 0, ?, ?, ?
       )
     `);
@@ -380,6 +386,8 @@ function confirmReservation({
       pricing.extrasSubtotal,
       pricing.discountAmount,
       pricing.appliedPromo ? pricing.appliedPromo.code : '',
+      pricing.loyaltyPointsRedeemed || 0,
+      pricing.loyaltyDiscountAmount || 0,
       pricing.taxAmount,
       pricing.serviceFeeAmount,
       pricing.cityLevyAmount,
@@ -482,10 +490,11 @@ function confirmReservation({
       paymentVerification.verifiedAt
     );
 
-    // Award loyalty points if booked by a registered user
+    // Deduct redeemed loyalty points & award new loyalty points if booked by a registered user
     if (userId) {
+      const redeemed = Number(pricing.loyaltyPointsRedeemed || 0);
       const pointsEarned = Math.round(pricing.totalAmount * 2);
-      db.prepare('UPDATE users SET loyalty_points = loyalty_points + ? WHERE id = ?').run(pointsEarned, userId);
+      db.prepare('UPDATE users SET loyalty_points = MAX(0, loyalty_points - ?) + ? WHERE id = ?').run(redeemed, pointsEarned, userId);
     }
 
     logAudit({
@@ -556,6 +565,13 @@ function confirmReservation({
       }
     });
   }
+
+  broadcastFrontDeskEvent({
+    type: 'RESERVATION_CREATED',
+    title: `New Reservation ${confirmedData.bookingReference}`,
+    message: `${guestFirstName} ${guestLastName} reserved ${roomSummary} (${checkIn} to ${checkOut})`,
+    bookingReference: confirmedData.bookingReference
+  });
 
   return getReservationByReference(confirmedData.bookingReference);
 }
@@ -763,12 +779,36 @@ function cancelReservation({
       }
     });
 
+    // Refund redeemed loyalty points if any
+    if (existing.user_id && Number(existing.loyalty_points_redeemed || 0) > 0) {
+      db.prepare('UPDATE users SET loyalty_points = loyalty_points + ? WHERE id = ?').run(
+        Number(existing.loyalty_points_redeemed),
+        existing.user_id
+      );
+    }
+
+    // Automatically notify any priority waitlist guests waiting for the released physical room(s)
+    const releasedRoomIds = (existing.rooms || []).map((r) => r.room_id).filter(Boolean);
+    const notifiedWaitlist = notifyMatchingWaitlistEntries({
+      roomIds: releasedRoomIds,
+      checkIn: existing.check_in,
+      checkOut: existing.check_out
+    });
+
+    broadcastFrontDeskEvent({
+      type: 'RESERVATION_CANCELLED',
+      title: `Cancelled Reservation ${existing.booking_reference}`,
+      message: `Room inventory released (${existing.check_in} to ${existing.check_out}). Notified ${notifiedWaitlist.length} waitlist guest(s).`,
+      bookingReference: existing.booking_reference
+    });
+
     return {
       cancelled: true,
       bookingReference: existing.booking_reference,
       refundAmount,
       penaltyApplied,
       refundPaymentRef,
+      notifiedWaitlist,
       reservation: getReservationByReference(existing.booking_reference)
     };
   });
@@ -1267,6 +1307,362 @@ function cancelFacilitySlot({
   });
 }
 
+/**
+ * 1. AutomatedWaitlistAndRoomAlertModule:
+ * Allows guests viewing an unavailable room/suite to join a priority waitlist for their dates,
+ * and automatically dispatches alerts when a cancellation releases that room.
+ */
+function joinRoomWaitlist({
+  roomId = null,
+  categoryId = null,
+  guestName,
+  guestEmail,
+  guestPhone = '',
+  checkIn,
+  checkOut,
+  adults = 2,
+  children = 0,
+  notes = '',
+  ipAddress = ''
+}) {
+  if (!guestName || !guestEmail || !checkIn || !checkOut) {
+    const err = new Error('guestName, guestEmail, checkIn, and checkOut are required to join the priority waitlist.');
+    err.code = 'MISSING_WAITLIST_FIELDS';
+    throw err;
+  }
+  validateStayDates(checkIn, checkOut);
+
+  const db = getDb();
+  let targetCategoryId = categoryId ? Number(categoryId) : null;
+  let roomNumber = null;
+  if (roomId) {
+    const rm = db.prepare('SELECT id, room_number, category_id FROM rooms WHERE id = ?').get(Number(roomId));
+    if (rm) {
+      targetCategoryId = targetCategoryId || rm.category_id;
+      roomNumber = rm.room_number;
+    }
+  }
+
+  const waitlistRef = `WL-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  const res = db.prepare(`
+    INSERT INTO waitlist_entries (
+      waitlist_reference, room_id, category_id, guest_name, guest_email, guest_phone,
+      check_in, check_out, adults, children, notes, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting')
+  `).run(
+    waitlistRef,
+    roomId ? Number(roomId) : null,
+    targetCategoryId,
+    String(guestName).trim(),
+    String(guestEmail).trim().toLowerCase(),
+    String(guestPhone || '').trim(),
+    checkIn,
+    checkOut,
+    Math.max(1, Number(adults || 2)),
+    Math.max(0, Number(children || 0)),
+    String(notes || '').trim()
+  );
+
+  const entry = db.prepare('SELECT * FROM waitlist_entries WHERE id = ?').get(Number(res.lastInsertRowid));
+
+  logAudit({
+    eventType: 'WAITLIST_JOINED',
+    entityType: 'waitlist',
+    entityId: waitlistRef,
+    actorRole: 'guest',
+    actorEmail: entry.guest_email,
+    summary: `Guest ${entry.guest_name} joined priority waitlist (${waitlistRef}) for ${roomNumber ? `Room #${roomNumber}` : 'Category'} (${checkIn} to ${checkOut}).`,
+    ipAddress
+  });
+
+  broadcastFrontDeskEvent({
+    type: 'WAITLIST_JOINED',
+    title: `Priority Waitlist ${waitlistRef}`,
+    message: `${entry.guest_name} joined waitlist for ${checkIn} to ${checkOut}`,
+    roomNumber
+  });
+
+  return entry;
+}
+
+function notifyMatchingWaitlistEntries({ roomIds = [], checkIn, checkOut }) {
+  if (!Array.isArray(roomIds) || roomIds.length === 0) return [];
+  const db = getDb();
+  const notified = [];
+
+  for (const rId of roomIds) {
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(Number(rId));
+    if (!room) continue;
+
+    const matches = db.prepare(`
+      SELECT * FROM waitlist_entries
+      WHERE status = 'waiting'
+        AND (room_id = ? OR (room_id IS NULL AND category_id = ?))
+        AND check_in < ?
+        AND check_out > ?
+      ORDER BY id ASC
+    `).all(room.id, room.category_id, checkOut, checkIn);
+
+    for (const w of matches) {
+      // Verify the room is now genuinely available for the waitlist guest's requested dates
+      const avail = checkSingleRoomAvailability(room.id, w.check_in, w.check_out);
+      if (avail.available) {
+        db.prepare(`
+          UPDATE waitlist_entries
+          SET status = 'notified', notified_at = datetime('now')
+          WHERE id = ?
+        `).run(w.id);
+
+        db.prepare(`
+          INSERT INTO notifications (
+            user_id, recipient_email, recipient_phone, channel, template_code, subject, body, status
+          ) VALUES (NULL, ?, ?, 'email', 'WAITLIST_ROOM_RELEASED', ?, ?, 'sent')
+        `).run(
+          w.guest_email,
+          w.guest_phone || '',
+          `Maison Aurélia Priority Alert — Room #${room.room_number} (${room.name}) Now Available (${w.waitlist_reference})`,
+          `Dear ${w.guest_name}, Room #${room.room_number} (${room.name}) has just become available for your requested stay (${w.check_in} to ${w.check_out}). Reference: ${w.waitlist_reference}.`
+        );
+
+        const updatedEntry = db.prepare('SELECT * FROM waitlist_entries WHERE id = ?').get(w.id);
+        notified.push(updatedEntry);
+
+        broadcastFrontDeskEvent({
+          type: 'WAITLIST_NOTIFIED',
+          title: `Waitlist Alert Sent (${w.waitlist_reference})`,
+          message: `Notified ${w.guest_name} that Room #${room.room_number} is now available (${w.check_in} to ${w.check_out})`,
+          roomNumber: room.room_number
+        });
+      }
+    }
+  }
+
+  return notified;
+}
+
+/**
+ * 2. PrintableTaxInvoiceAndFolioGeneratorModule:
+ * Generates an official, print-ready HTML & structured JSON tax + incidental folio invoice.
+ */
+function generatePrintableTaxInvoice(bookingReference) {
+  const res = getReservationByReference(bookingReference);
+  if (!res) return null;
+  const settings = getHotelSettings();
+  const invoiceNo = (res.payments && res.payments[0] && res.payments[0].invoice_number) || `INV-${res.booking_reference}`;
+
+  const roomRowsHtml = (res.rooms || [])
+    .map(
+      (r) => `
+      <tr>
+        <td>Suite Accommodation — <strong>#${r.room_number} ${r.room_name}</strong> (${r.check_in} &rarr; ${r.check_out})</td>
+        <td style="text-align:center;">${r.nights} night(s)</td>
+        <td style="text-align:right;">$${Number(r.nightly_rate).toFixed(2)}</td>
+        <td style="text-align:right;">$${Number(r.room_total).toFixed(2)}</td>
+      </tr>`
+    )
+    .join('');
+
+  const addonRowsHtml = (res.addons || [])
+    .map(
+      (a) => `
+      <tr>
+        <td>Curated Enhancement — ${a.addon_name}</td>
+        <td style="text-align:center;">${a.quantity}</td>
+        <td style="text-align:right;">$${Number(a.unit_price).toFixed(2)}</td>
+        <td style="text-align:right;">$${Number(a.total_price).toFixed(2)}</td>
+      </tr>`
+    )
+    .join('');
+
+  const folioRowsHtml = (res.folioCharges || [])
+    .map(
+      (fc) => `
+      <tr>
+        <td>In-Stay Folio (${fc.category}) — ${fc.description}</td>
+        <td style="text-align:center;">${fc.quantity}</td>
+        <td style="text-align:right;">$${Number(fc.unit_price).toFixed(2)}</td>
+        <td style="text-align:right;">$${Number(fc.total_amount).toFixed(2)}</td>
+      </tr>`
+    )
+    .join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Official Tax &amp; Folio Invoice — ${res.booking_reference}</title>
+  <style>
+    body { font-family: 'Georgia', serif; color: #0f172a; margin: 40px auto; max-width: 860px; padding: 0 24px; }
+    .header { display: flex; justify-content: space-between; border-bottom: 2px solid #c5a059; padding-bottom: 20px; margin-bottom: 24px; }
+    .brand { font-size: 26px; letter-spacing: 2px; text-transform: uppercase; color: #0b132b; }
+    .sub { font-size: 12px; color: #64748b; font-family: sans-serif; }
+    table { width: 100%; border-collapse: collapse; margin: 20px 0; font-family: sans-serif; font-size: 13px; }
+    th { background: #0b132b; color: #fff; text-align: left; padding: 10px 12px; text-transform: uppercase; font-size: 11px; letter-spacing: 1px; }
+    td { padding: 10px 12px; border-bottom: 1px solid #e2e8f0; }
+    .totals { margin-left: auto; width: 340px; font-family: sans-serif; font-size: 13px; }
+    .totals-row { display: flex; justify-content: space-between; padding: 6px 0; }
+    .totals-grand { border-top: 2px solid #0b132b; font-weight: bold; font-size: 16px; padding-top: 10px; margin-top: 6px; }
+    @media print { .no-print { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="no-print" style="margin-bottom:20px;text-align:right;">
+    <button onclick="window.print()" style="background:#c5a059;color:#0b132b;border:none;padding:10px 18px;font-weight:bold;cursor:pointer;border-radius:4px;">🖨️ Print / Save PDF Invoice</button>
+  </div>
+  <div class="header">
+    <div>
+      <div class="brand">${settings.hotel_name || 'Maison Aurélia Grand Palace'}</div>
+      <div class="sub">Quai du Mont-Blanc 42, 1201 Genève, Switzerland • VAT CHE-114.892.301</div>
+    </div>
+    <div style="text-align:right;font-family:sans-serif;">
+      <div style="font-size:18px;font-weight:bold;">OFFICIAL TAX &amp; FOLIO INVOICE</div>
+      <div class="sub">Invoice #: <strong>${invoiceNo}</strong></div>
+      <div class="sub">Booking Reference: <strong>${res.booking_reference}</strong></div>
+      <div class="sub">Status: <strong>${res.status.toUpperCase()} (${res.payment_status.toUpperCase()})</strong></div>
+    </div>
+  </div>
+  <div style="display:flex;justify-content:space-between;font-family:sans-serif;font-size:13px;margin-bottom:20px;">
+    <div>
+      <strong>Billed To Guest:</strong><br/>
+      ${res.guest_first_name} ${res.guest_last_name}<br/>
+      ${res.guest_email} • ${res.guest_phone}
+    </div>
+    <div style="text-align:right;">
+      <strong>Stay Window:</strong> ${res.check_in} to ${res.check_out} (${res.nights} night(s))<br/>
+      <strong>Occupancy:</strong> ${res.adults} Adult(s), ${res.children} Child(ren)
+    </div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Description</th>
+        <th style="text-align:center;">Qty / Nights</th>
+        <th style="text-align:right;">Unit Price (USD)</th>
+        <th style="text-align:right;">Line Total (USD)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${roomRowsHtml}
+      ${addonRowsHtml}
+      ${folioRowsHtml}
+    </tbody>
+  </table>
+  <div class="totals">
+    <div class="totals-row"><span>Room &amp; Seasonal Subtotal:</span><span>$${Number(res.room_subtotal + res.seasonal_adjustment).toFixed(2)}</span></div>
+    <div class="totals-row"><span>Curated Add-Ons Subtotal:</span><span>$${Number(res.extras_subtotal).toFixed(2)}</span></div>
+    ${res.discount_amount > 0 ? `<div class="totals-row" style="color:#15803d;"><span>Promo Discount (${res.promo_code}):</span><span>-$${Number(res.discount_amount).toFixed(2)}</span></div>` : ''}
+    ${res.loyalty_discount_amount > 0 ? `<div class="totals-row" style="color:#15803d;"><span>Loyalty Points Redeemed (${res.loyalty_points_redeemed} pts):</span><span>-$${Number(res.loyalty_discount_amount).toFixed(2)}</span></div>` : ''}
+    <div class="totals-row"><span>VAT &amp; Hospitality Tax:</span><span>$${Number(res.tax_amount).toFixed(2)}</span></div>
+    <div class="totals-row"><span>Palace Service Charge:</span><span>$${Number(res.service_fee_amount).toFixed(2)}</span></div>
+    <div class="totals-row"><span>Municipal City Levy:</span><span>$${Number(res.city_levy_amount).toFixed(2)}</span></div>
+    <div class="totals-row"><span>In-Stay Incidental Folio Charges:</span><span>$${Number(res.incidentalTotal).toFixed(2)}</span></div>
+    <div class="totals-row totals-grand"><span>Grand Folio Total (USD):</span><span>$${Number(res.grandFolioTotal).toFixed(2)}</span></div>
+    <div class="totals-row"><span>Total Amount Paid:</span><span>$${Number(res.amount_paid).toFixed(2)}</span></div>
+    ${res.refunded_amount > 0 ? `<div class="totals-row"><span>Total Refunded:</span><span>$${Number(res.refunded_amount).toFixed(2)}</span></div>` : ''}
+    <div class="totals-row" style="font-weight:bold;"><span>Remaining Folio Balance:</span><span>$${Number(res.remainingFolioBalance).toFixed(2)}</span></div>
+  </div>
+</body>
+</html>`;
+
+  return {
+    invoiceNumber: invoiceNo,
+    bookingReference: res.booking_reference,
+    issuedAt: new Date().toISOString(),
+    reservation: res,
+    html
+  };
+}
+
+/**
+ * 3. HousekeepingStaffAssignmentAndChecklistModule:
+ * Records a room inspection checklist, attendant assignment, and updates the room's housekeeping readiness.
+ */
+function submitHousekeepingChecklist({
+  roomId,
+  attendantName = 'Marie-Claire Laurent',
+  housekeepingStatus = 'clean_inspected',
+  linenChanged = true,
+  marbleSanitised = true,
+  minibarRestocked = true,
+  floralsRefreshed = true,
+  supervisorVerified = true,
+  notes = '',
+  inspectedBy = 'Executive Housekeeper',
+  actorId = null,
+  actorRole = 'admin',
+  actorEmail = '',
+  ipAddress = ''
+}) {
+  const validHk = ['clean_inspected', 'dirty_turnover', 'in_progress', 'turndown_complete'];
+  if (!validHk.includes(housekeepingStatus)) {
+    const err = new Error('Invalid housekeeping status.');
+    err.code = 'INVALID_HOUSEKEEPING_STATUS';
+    throw err;
+  }
+
+  const db = getDb();
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(Number(roomId));
+  if (!room) {
+    const err = new Error('Room not found.');
+    err.code = 'ROOM_NOT_FOUND';
+    throw err;
+  }
+
+  return withImmediateTransaction(db, () => {
+    const ins = db.prepare(`
+      INSERT INTO housekeeping_checklists (
+        room_id, room_number, attendant_name, housekeeping_status,
+        linen_changed, marble_sanitised, minibar_restocked, florals_refreshed,
+        supervisor_verified, notes, inspected_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      room.id,
+      room.room_number,
+      String(attendantName || 'Housekeeping Attendant').trim(),
+      housekeepingStatus,
+      linenChanged ? 1 : 0,
+      marbleSanitised ? 1 : 0,
+      minibarRestocked ? 1 : 0,
+      floralsRefreshed ? 1 : 0,
+      supervisorVerified ? 1 : 0,
+      String(notes || '').trim(),
+      String(inspectedBy || 'Executive Housekeeper').trim()
+    );
+
+    db.prepare(`
+      UPDATE rooms
+      SET housekeeping_status = ?, housekeeping_updated_at = datetime('now'), updated_at = datetime('now')
+      WHERE id = ?
+    `).run(housekeepingStatus, room.id);
+
+    const checklist = db.prepare('SELECT * FROM housekeeping_checklists WHERE id = ?').get(Number(ins.lastInsertRowid));
+
+    logAudit({
+      eventType: 'HOUSEKEEPING_CHECKLIST_COMPLETED',
+      entityType: 'room',
+      entityId: String(room.id),
+      actorId,
+      actorRole,
+      actorEmail,
+      summary: `Completed housekeeping inspection checklist for Room #${room.room_number} (Attendant: ${checklist.attendant_name}, Status: ${housekeepingStatus}).`,
+      details: checklist,
+      ipAddress
+    });
+
+    broadcastFrontDeskEvent({
+      type: 'HOUSEKEEPING_UPDATED',
+      title: `Room #${room.room_number} Housekeeping: ${housekeepingStatus.toUpperCase()}`,
+      message: `Attendant ${checklist.attendant_name} completed checklist (${housekeepingStatus})`,
+      roomNumber: room.room_number
+    });
+
+    return {
+      checklist,
+      room: db.prepare('SELECT * FROM rooms WHERE id = ?').get(room.id)
+    };
+  });
+}
+
 module.exports = {
   generateBookingReference,
   createCheckoutHold,
@@ -1280,5 +1676,9 @@ module.exports = {
   removeFolioCharge,
   submitGuestReview,
   bookFacilitySlot,
-  cancelFacilitySlot
+  cancelFacilitySlot,
+  joinRoomWaitlist,
+  notifyMatchingWaitlistEntries,
+  generatePrintableTaxInvoice,
+  submitHousekeepingChecklist
 };

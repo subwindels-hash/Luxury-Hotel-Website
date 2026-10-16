@@ -222,6 +222,9 @@ function calculateStayPricing({
   children = 0,
   selectedAddons = [],
   promoCode = '',
+  redeemLoyaltyPoints = false,
+  userId = null,
+  availableLoyaltyPoints = null,
   paymentPlan = 'full',
   currency = 'USD'
 }) {
@@ -407,7 +410,27 @@ function calculateStayPricing({
     }
   }
 
-  const netTaxableAmount = Math.max(0, roundMoney(combinedRoomRate + extrasSubtotal - discountAmount));
+  // Loyalty Points Checkout Redemption (10 points = $1.00 USD, up to 50% of remaining pre-tax subtotal)
+  let loyaltyPointsRedeemed = 0;
+  let loyaltyDiscountAmount = 0;
+  if (redeemLoyaltyPoints) {
+    let userPts = Number(availableLoyaltyPoints || 0);
+    if (!userPts && userId) {
+      const userRow = db.prepare('SELECT loyalty_points FROM users WHERE id = ?').get(Number(userId));
+      if (userRow) userPts = Number(userRow.loyalty_points || 0);
+    }
+    if (userPts >= 10) {
+      const remainingPreTax = Math.max(0, roundMoney(combinedRoomRate + extrasSubtotal - discountAmount));
+      const maxRedeemableUsd = roundMoney(remainingPreTax * 0.5);
+      const maxPointsByCap = Math.floor(maxRedeemableUsd * 10);
+      loyaltyPointsRedeemed = Math.min(userPts, maxPointsByCap);
+      // Round to nearest 10 points for clean $1 increments
+      loyaltyPointsRedeemed = Math.floor(loyaltyPointsRedeemed / 10) * 10;
+      loyaltyDiscountAmount = roundMoney(loyaltyPointsRedeemed / 10);
+    }
+  }
+
+  const netTaxableAmount = Math.max(0, roundMoney(combinedRoomRate + extrasSubtotal - discountAmount - loyaltyDiscountAmount));
   const taxAmount = roundMoney(netTaxableAmount * (settings.tax_rate_percent / 100));
   const serviceFeeAmount = roundMoney(netTaxableAmount * (settings.service_fee_percent / 100));
   const cityLevyAmount = roundMoney(settings.city_levy_per_night * nights * Math.max(1, roomIds.length));
@@ -435,6 +458,8 @@ function calculateStayPricing({
     extrasSubtotal,
     discountAmount,
     appliedPromo,
+    loyaltyPointsRedeemed,
+    loyaltyDiscountAmount,
     taxRatePercent: settings.tax_rate_percent,
     taxAmount,
     serviceFeePercent: settings.service_fee_percent,
