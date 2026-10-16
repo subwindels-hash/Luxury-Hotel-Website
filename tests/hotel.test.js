@@ -1231,4 +1231,96 @@ describe('Maison Aurélia Luxury Hotel & Online Reservation Platform — End-to-
     assert.equal(payLedger.status, 200);
     assert.ok(Array.isArray(payLedger.data.payments));
   });
+
+  it('21. Supports Complete Two-Way Messaging Inbox between Users and Admin with unread tracking and instant replies', async () => {
+    const guestLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'elena.rostova@example.com',
+      password: 'GuestPass!2026'
+    });
+    assert.equal(guestLogin.status, 200);
+    const guestToken = guestLogin.data.token;
+
+    const adminLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'admin@maisonaurelia.luxury',
+      password: 'AureliaAdmin!2026'
+    });
+    assert.equal(adminLogin.status, 200);
+    const adminToken = adminLogin.data.token;
+
+    // 1. User starts a new message thread to Admin / Concierge
+    const startThread = await reqJson(
+      'POST',
+      '/api/guest/messages',
+      {
+        department: 'Head Concierge & Admin',
+        bookingReference: 'AUR-2026-PRES01',
+        priority: 'vip_urgent',
+        subject: 'Private Riva Yacht Sunset Cruise & Sommelier Selection',
+        message: 'Bonjour Admin, could we reserve the private Riva yacht for a 2-hour sunset cruise on Lake Geneva during our stay?'
+      },
+      { Authorization: `Bearer ${guestToken}` }
+    );
+    assert.equal(startThread.status, 201);
+    assert.equal(startThread.data.thread.status, 'awaiting_staff');
+    assert.equal(startThread.data.thread.unread_by_admin, 1);
+    const threadId = startThread.data.thread.id;
+
+    // 2. Admin lists inbox & opens the user's thread (clears unread_by_admin -> 0)
+    const adminList = await reqJson('GET', '/api/admin/messages', null, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(adminList.status, 200);
+    assert.ok(adminList.data.metrics.totalThreads >= 2);
+
+    const adminOpen = await reqJson('GET', `/api/admin/messages/${threadId}`, null, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(adminOpen.status, 200);
+    assert.equal(adminOpen.data.thread.unread_by_admin, 0);
+
+    // 3. Admin replies to the user -> sets unread_by_guest = 1 and status = 'awaiting_guest'
+    const adminReply = await reqJson(
+      'POST',
+      `/api/admin/messages/${threadId}/reply`,
+      {
+        body: 'Madame Rostova, our Captain has reserved the Riva Aquarama for 17:30 with Dom Pérignon P2 on board.',
+        status: 'awaiting_guest'
+      },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(adminReply.status, 201);
+    assert.equal(adminReply.data.thread.status, 'awaiting_guest');
+    assert.equal(adminReply.data.thread.unread_by_guest, 1);
+    assert.equal(adminReply.data.thread.messages.length, 2);
+
+    // 4. User opens thread in Guest Messaging Inbox -> clears unread_by_guest -> 0 and sees Admin reply
+    const guestRead = await reqJson('GET', `/api/guest/messages/${threadId}`, null, {
+      Authorization: `Bearer ${guestToken}`
+    });
+    assert.equal(guestRead.status, 200);
+    assert.equal(guestRead.data.thread.unread_by_guest, 0);
+    assert.equal(guestRead.data.thread.messages[1].sender_role, 'admin');
+
+    // 5. User sends a follow-up reply to Admin
+    const guestReply = await reqJson(
+      'POST',
+      `/api/guest/messages/${threadId}/reply`,
+      { body: 'Merci beaucoup! Please charge the yacht charter directly to our Presidential Suite folio.' },
+      { Authorization: `Bearer ${guestToken}` }
+    );
+    assert.equal(guestReply.status, 201);
+    assert.equal(guestReply.data.thread.status, 'awaiting_staff');
+    assert.equal(guestReply.data.thread.unread_by_admin, 1);
+    assert.equal(guestReply.data.thread.messages.length, 3);
+
+    // 6. Admin marks the conversation resolved
+    const resolveRes = await reqJson(
+      'PATCH',
+      `/api/admin/messages/${threadId}/status`,
+      { status: 'resolved' },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(resolveRes.status, 200);
+    assert.equal(resolveRes.data.thread.status, 'resolved');
+  });
 });

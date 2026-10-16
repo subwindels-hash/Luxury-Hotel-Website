@@ -509,6 +509,39 @@ function createSchema(db) {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS message_threads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_reference TEXT NOT NULL UNIQUE,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      guest_name TEXT NOT NULL,
+      guest_email TEXT NOT NULL,
+      booking_reference TEXT DEFAULT '',
+      department TEXT NOT NULL DEFAULT 'Head Concierge & Admin',
+      subject TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'awaiting_staff' CHECK (status IN ('open', 'awaiting_staff', 'awaiting_guest', 'resolved', 'closed')),
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal', 'vip_urgent')),
+      unread_by_admin INTEGER NOT NULL DEFAULT 0,
+      unread_by_guest INTEGER NOT NULL DEFAULT 0,
+      last_message_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS thread_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id INTEGER NOT NULL REFERENCES message_threads(id) ON DELETE CASCADE,
+      sender_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      sender_role TEXT NOT NULL DEFAULT 'guest',
+      sender_name TEXT NOT NULL,
+      sender_email TEXT NOT NULL,
+      body TEXT NOT NULL,
+      is_read INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_threads_email ON message_threads(guest_email, last_message_at);
+    CREATE INDEX IF NOT EXISTS idx_thread_messages_thread ON thread_messages(thread_id, id);
+
     CREATE INDEX IF NOT EXISTS idx_res_rooms_lookup ON reservation_rooms(room_id, status, check_in, check_out);
     CREATE INDEX IF NOT EXISTS idx_holds_lookup ON room_holds(room_id, status, expires_at, check_in, check_out);
     CREATE INDEX IF NOT EXISTS idx_maint_lookup ON maintenance_blocks(room_id, status, start_date, end_date);

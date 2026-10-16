@@ -41,7 +41,11 @@ const {
   generatePrintableTaxInvoice,
   submitHousekeepingChecklist
 } = require('../services/bookingService');
-const { registerSseClient, getRecentFrontDeskEvents } = require('../services/sseService');
+const {
+  registerSseClient,
+  broadcastFrontDeskEvent,
+  getRecentFrontDeskEvents
+} = require('../services/sseService');
 const {
   createPaymentToken,
   processPaymentWebhook,
@@ -960,6 +964,19 @@ router.get('/guest/dashboard', requireAuth, (req, res) => {
     ORDER BY id DESC LIMIT 40
   `).all(req.user.id, req.user.email);
 
+  const messageThreads = db.prepare(`
+    SELECT
+      t.*,
+      (SELECT COUNT(*) FROM thread_messages tm WHERE tm.thread_id = t.id) AS messages_count,
+      (SELECT body FROM thread_messages tm WHERE tm.thread_id = t.id ORDER BY tm.id DESC LIMIT 1) AS last_message_preview,
+      (SELECT sender_name FROM thread_messages tm WHERE tm.thread_id = t.id ORDER BY tm.id DESC LIMIT 1) AS last_sender_name
+    FROM message_threads t
+    WHERE t.user_id = ? OR LOWER(t.guest_email) = LOWER(?)
+    ORDER BY t.last_message_at DESC, t.id DESC
+  `).all(req.user.id, req.user.email);
+
+  const unreadMessagesCount = messageThreads.reduce((sum, t) => sum + Number(t.unread_by_guest || 0), 0);
+
   res.json({
     user: freshUser,
     metrics: {
@@ -971,11 +988,13 @@ router.get('/guest/dashboard', requireAuth, (req, res) => {
       redeemableCreditUsd,
       loyaltyTier: freshUser?.loyalty_tier || 'Aurélia Privé',
       nextTier,
-      pointsToNextTier
+      pointsToNextTier,
+      unreadMessagesCount
     },
     reservations,
     waitlist,
     conciergeRequests,
+    messageThreads,
     notifications
   });
 });
@@ -2646,6 +2665,371 @@ router.get('/admin/events', (req, res) => {
 
 router.get('/admin/events/recent', requireRoles('receptionist', 'finance', 'manager', 'admin'), (_req, res) => {
   res.json({ events: getRecentFrontDeskEvents() });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Complete Two-Way Messaging Inbox System (Guest <-> Admin / Concierge)
+// ---------------------------------------------------------------------------
+
+// Guest: List all message threads for the signed-in user
+router.get('/guest/messages', requireAuth, (req, res) => {
+  const db = getDb();
+  const threads = db.prepare(`
+    SELECT
+      t.*,
+      (SELECT COUNT(*) FROM thread_messages tm WHERE tm.thread_id = t.id) AS messages_count,
+      (SELECT body FROM thread_messages tm WHERE tm.thread_id = t.id ORDER BY tm.id DESC LIMIT 1) AS last_message_preview,
+      (SELECT sender_name FROM thread_messages tm WHERE tm.thread_id = t.id ORDER BY tm.id DESC LIMIT 1) AS last_sender_name
+    FROM message_threads t
+    WHERE t.user_id = ? OR LOWER(t.guest_email) = LOWER(?)
+    ORDER BY t.last_message_at DESC, t.id DESC
+  `).all(req.user.id, req.user.email);
+
+  const unreadCount = threads.reduce((sum, t) => sum + Number(t.unread_by_guest || 0), 0);
+  res.json({ threads, unreadCount });
+});
+
+// Guest: Start a new message thread to Admin / Concierge
+router.post('/guest/messages', requireAuth, (req, res) => {
+  const {
+    subject,
+    message,
+    department = 'Head Concierge & Admin',
+    bookingReference = '',
+    priority = 'normal'
+  } = req.body;
+
+  if (!subject || !message) {
+    return res.status(400).json({
+      error: 'MISSING_FIELDS',
+      message: 'Subject and message body are required.'
+    });
+  }
+
+  const db = getDb();
+  const threadRef = `MSG-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  const validPriority = priority === 'vip_urgent' ? 'vip_urgent' : 'normal';
+  const guestName = `${req.user.first_name} ${req.user.last_name}`.trim();
+
+  const tRes = db.prepare(`
+    INSERT INTO message_threads (
+      thread_reference, user_id, guest_name, guest_email, booking_reference,
+      department, subject, status, priority, unread_by_admin, unread_by_guest,
+      last_message_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_staff', ?, 1, 0, datetime('now'), datetime('now'))
+  `).run(
+    threadRef,
+    req.user.id,
+    guestName,
+    req.user.email,
+    String(bookingReference || '').trim(),
+    String(department || 'Head Concierge & Admin').trim(),
+    String(subject).trim(),
+    validPriority
+  );
+
+  const threadId = Number(tRes.lastInsertRowid);
+  db.prepare(`
+    INSERT INTO thread_messages (
+      thread_id, sender_user_id, sender_role, sender_name, sender_email, body, is_read
+    ) VALUES (?, ?, 'guest', ?, ?, ?, 0)
+  `).run(threadId, req.user.id, guestName, req.user.email, String(message).trim());
+
+  const thread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(threadId);
+
+  logAudit({
+    eventType: 'GUEST_MESSAGE_THREAD_CREATED',
+    entityType: 'message_thread',
+    entityId: threadRef,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Guest ${guestName} (${req.user.email}) started message thread ${threadRef}: "${thread.subject}".`,
+    ipAddress: req.ip
+  });
+
+  broadcastFrontDeskEvent({
+    type: 'MESSAGE_RECEIVED_FROM_GUEST',
+    title: `New Guest Message (${threadRef})`,
+    message: `${guestName}: "${thread.subject}" (${thread.department})`
+  });
+
+  res.status(201).json({ thread: { ...thread, messages } });
+});
+
+// Guest: Get full conversation thread & messages (marks guest unread = 0)
+router.get('/guest/messages/:threadId', requireAuth, (req, res) => {
+  const db = getDb();
+  const threadId = Number(req.params.threadId);
+  const thread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  if (
+    !thread ||
+    (thread.user_id !== req.user.id && thread.guest_email.toLowerCase() !== req.user.email.toLowerCase())
+  ) {
+    return res.status(404).json({ error: 'THREAD_NOT_FOUND', message: 'Conversation thread not found.' });
+  }
+
+  db.prepare('UPDATE message_threads SET unread_by_guest = 0 WHERE id = ?').run(threadId);
+  db.prepare("UPDATE thread_messages SET is_read = 1 WHERE thread_id = ? AND sender_role != 'guest'").run(threadId);
+
+  const updatedThread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(threadId);
+
+  res.json({ thread: { ...updatedThread, messages } });
+});
+
+// Guest: Reply in an existing message thread
+router.post('/guest/messages/:threadId/reply', requireAuth, (req, res) => {
+  const { body } = req.body;
+  if (!body || !String(body).trim()) {
+    return res.status(400).json({ error: 'EMPTY_MESSAGE', message: 'Reply message cannot be empty.' });
+  }
+
+  const db = getDb();
+  const threadId = Number(req.params.threadId);
+  const thread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  if (
+    !thread ||
+    (thread.user_id !== req.user.id && thread.guest_email.toLowerCase() !== req.user.email.toLowerCase())
+  ) {
+    return res.status(404).json({ error: 'THREAD_NOT_FOUND', message: 'Conversation thread not found.' });
+  }
+
+  const guestName = `${req.user.first_name} ${req.user.last_name}`.trim();
+  db.prepare(`
+    INSERT INTO thread_messages (
+      thread_id, sender_user_id, sender_role, sender_name, sender_email, body, is_read
+    ) VALUES (?, ?, 'guest', ?, ?, ?, 0)
+  `).run(threadId, req.user.id, guestName, req.user.email, String(body).trim());
+
+  db.prepare(`
+    UPDATE message_threads
+    SET status = 'awaiting_staff',
+        unread_by_admin = unread_by_admin + 1,
+        unread_by_guest = 0,
+        last_message_at = datetime('now'),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(threadId);
+
+  const updatedThread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(threadId);
+
+  broadcastFrontDeskEvent({
+    type: 'MESSAGE_RECEIVED_FROM_GUEST',
+    title: `Guest Reply in ${thread.thread_reference}`,
+    message: `${guestName} replied in "${thread.subject}"`
+  });
+
+  res.status(201).json({ thread: { ...updatedThread, messages } });
+});
+
+// Admin / Staff: List all guest message threads with metrics
+router.get('/admin/messages', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  let sql = `
+    SELECT
+      t.*,
+      (SELECT COUNT(*) FROM thread_messages tm WHERE tm.thread_id = t.id) AS messages_count,
+      (SELECT body FROM thread_messages tm WHERE tm.thread_id = t.id ORDER BY tm.id DESC LIMIT 1) AS last_message_preview,
+      (SELECT sender_name FROM thread_messages tm WHERE tm.thread_id = t.id ORDER BY tm.id DESC LIMIT 1) AS last_sender_name
+    FROM message_threads t
+    WHERE 1=1
+  `;
+  const params = [];
+  if (req.query.status && req.query.status !== 'all') {
+    sql += ' AND t.status = ?';
+    params.push(req.query.status);
+  }
+  if (req.query.search) {
+    const q = `%${req.query.search}%`;
+    sql += ' AND (t.thread_reference LIKE ? OR t.guest_name LIKE ? OR t.guest_email LIKE ? OR t.subject LIKE ?)';
+    params.push(q, q, q, q);
+  }
+  sql += ' ORDER BY t.unread_by_admin DESC, t.last_message_at DESC, t.id DESC';
+
+  const threads = db.prepare(sql).all(...params);
+  const allThreads = db.prepare('SELECT status, unread_by_admin FROM message_threads').all();
+
+  const metrics = {
+    totalThreads: allThreads.length,
+    unreadThreadsCount: allThreads.filter((t) => Number(t.unread_by_admin || 0) > 0).length,
+    awaitingStaffCount: allThreads.filter((t) => t.status === 'awaiting_staff' || t.status === 'open').length,
+    resolvedCount: allThreads.filter((t) => t.status === 'resolved' || t.status === 'closed').length
+  };
+
+  res.json({ threads, metrics });
+});
+
+// Admin / Staff: Initiate a new direct message thread to a guest
+router.post('/admin/messages', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  const {
+    guestEmail,
+    guestName = 'Valued Guest',
+    subject,
+    message,
+    department = 'Head Concierge & Admin',
+    bookingReference = '',
+    priority = 'normal'
+  } = req.body;
+
+  if (!guestEmail || !subject || !message) {
+    return res.status(400).json({
+      error: 'MISSING_FIELDS',
+      message: 'guestEmail, subject, and message are required.'
+    });
+  }
+
+  const db = getDb();
+  const cleanEmail = String(guestEmail).trim().toLowerCase();
+  const matchedUser = db.prepare('SELECT id, first_name, last_name FROM users WHERE LOWER(email) = ?').get(cleanEmail);
+  const resolvedGuestName = matchedUser ? `${matchedUser.first_name} ${matchedUser.last_name}` : String(guestName).trim();
+
+  const threadRef = `MSG-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  const tRes = db.prepare(`
+    INSERT INTO message_threads (
+      thread_reference, user_id, guest_name, guest_email, booking_reference,
+      department, subject, status, priority, unread_by_admin, unread_by_guest,
+      last_message_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_guest', ?, 0, 1, datetime('now'), datetime('now'))
+  `).run(
+    threadRef,
+    matchedUser ? matchedUser.id : null,
+    resolvedGuestName,
+    cleanEmail,
+    String(bookingReference || '').trim(),
+    String(department).trim(),
+    String(subject).trim(),
+    priority === 'vip_urgent' ? 'vip_urgent' : 'normal'
+  );
+
+  const threadId = Number(tRes.lastInsertRowid);
+  const staffDisplayName = `${req.user.first_name} ${req.user.last_name} (${req.user.role.toUpperCase()})`;
+  db.prepare(`
+    INSERT INTO thread_messages (
+      thread_id, sender_user_id, sender_role, sender_name, sender_email, body, is_read
+    ) VALUES (?, ?, ?, ?, ?, ?, 0)
+  `).run(threadId, req.user.id, req.user.role, staffDisplayName, req.user.email, String(message).trim());
+
+  const thread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(threadId);
+
+  res.status(201).json({ thread: { ...thread, messages } });
+});
+
+// Admin / Staff: Inspect a specific thread & messages (marks admin unread = 0)
+router.get('/admin/messages/:threadId', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const threadId = Number(req.params.threadId);
+  const thread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  if (!thread) {
+    return res.status(404).json({ error: 'THREAD_NOT_FOUND', message: 'Message thread not found.' });
+  }
+
+  db.prepare('UPDATE message_threads SET unread_by_admin = 0 WHERE id = ?').run(threadId);
+  db.prepare("UPDATE thread_messages SET is_read = 1 WHERE thread_id = ? AND sender_role = 'guest'").run(threadId);
+
+  const updatedThread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(threadId);
+
+  res.json({ thread: { ...updatedThread, messages } });
+});
+
+// Admin / Staff: Reply to a user's message thread
+router.post('/admin/messages/:threadId/reply', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  const { body, status = 'awaiting_guest' } = req.body;
+  if (!body || !String(body).trim()) {
+    return res.status(400).json({ error: 'EMPTY_MESSAGE', message: 'Admin reply cannot be empty.' });
+  }
+
+  const db = getDb();
+  const threadId = Number(req.params.threadId);
+  const thread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  if (!thread) {
+    return res.status(404).json({ error: 'THREAD_NOT_FOUND', message: 'Message thread not found.' });
+  }
+
+  const staffDisplayName = `${req.user.first_name} ${req.user.last_name} (${req.user.role.toUpperCase()})`;
+  const cleanBody = String(body).trim();
+
+  db.prepare(`
+    INSERT INTO thread_messages (
+      thread_id, sender_user_id, sender_role, sender_name, sender_email, body, is_read
+    ) VALUES (?, ?, ?, ?, ?, ?, 0)
+  `).run(threadId, req.user.id, req.user.role, staffDisplayName, req.user.email, cleanBody);
+
+  const validStatuses = ['open', 'awaiting_staff', 'awaiting_guest', 'resolved', 'closed'];
+  const nextStatus = validStatuses.includes(status) ? status : 'awaiting_guest';
+
+  db.prepare(`
+    UPDATE message_threads
+    SET status = ?,
+        unread_by_admin = 0,
+        unread_by_guest = unread_by_guest + 1,
+        last_message_at = datetime('now'),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(nextStatus, threadId);
+
+  // Also record a notification in the user's notification log
+  db.prepare(`
+    INSERT INTO notifications (
+      user_id, recipient_email, channel, template_code, subject, body, status
+    ) VALUES (?, ?, 'email', 'DIRECT_MESSAGE_REPLY', ?, ?, 'sent')
+  `).run(
+    thread.user_id || null,
+    thread.guest_email,
+    `New Reply from ${staffDisplayName} — [${thread.thread_reference}] ${thread.subject}`,
+    `Dear ${thread.guest_name},\n\n${staffDisplayName} has replied to your conversation "${thread.subject}" (${thread.thread_reference}):\n\n"${cleanBody}"`
+  );
+
+  logAudit({
+    eventType: 'ADMIN_MESSAGE_REPLY_SENT',
+    entityType: 'message_thread',
+    entityId: thread.thread_reference,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Staff ${staffDisplayName} replied to ${thread.guest_email} in thread ${thread.thread_reference}.`,
+    ipAddress: req.ip
+  });
+
+  broadcastFrontDeskEvent({
+    type: 'ADMIN_REPLIED_TO_GUEST',
+    title: `Admin Replied (${thread.thread_reference})`,
+    message: `${staffDisplayName} replied to ${thread.guest_name}`
+  });
+
+  const updatedThread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(threadId);
+
+  res.status(201).json({ thread: { ...updatedThread, messages } });
+});
+
+// Admin / Staff: Update thread status or priority
+router.patch('/admin/messages/:threadId/status', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const threadId = Number(req.params.threadId);
+  const thread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  if (!thread) {
+    return res.status(404).json({ error: 'THREAD_NOT_FOUND', message: 'Message thread not found.' });
+  }
+
+  const validStatuses = ['open', 'awaiting_staff', 'awaiting_guest', 'resolved', 'closed'];
+  const nextStatus = validStatuses.includes(req.body.status) ? req.body.status : thread.status;
+  const nextPriority = req.body.priority === 'vip_urgent' ? 'vip_urgent' : req.body.priority === 'normal' ? 'normal' : thread.priority;
+
+  db.prepare(`
+    UPDATE message_threads
+    SET status = ?, priority = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(nextStatus, nextPriority, threadId);
+
+  const updatedThread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(threadId);
+
+  res.json({ thread: { ...updatedThread, messages } });
 });
 
 module.exports = router;

@@ -1999,6 +1999,8 @@
         renderGuestOverviewTab(tabContainer, dash);
       } else if (currentGuestTab === 'bookings') {
         renderGuestBookingsTab(tabContainer, dash);
+      } else if (currentGuestTab === 'messages') {
+        await renderGuestMessagesTab(tabContainer, dash);
       } else if (currentGuestTab === 'concierge') {
         renderGuestConciergeTab(tabContainer, dash);
       } else if (currentGuestTab === 'waitlist') {
@@ -2255,6 +2257,182 @@
     `;
   }
 
+  let activeGuestThreadId = null;
+
+  async function renderGuestMessagesTab(container, dash) {
+    const threads = dash.messageThreads || [];
+    if (!activeGuestThreadId && threads.length > 0) {
+      activeGuestThreadId = threads[0].id;
+    }
+
+    let activeThreadDetail = null;
+    if (activeGuestThreadId) {
+      try {
+        const detailRes = await apiFetch(`/api/guest/messages/${activeGuestThreadId}`);
+        activeThreadDetail = detailRes.thread;
+      } catch (_) {
+        activeThreadDetail = null;
+      }
+    }
+
+    container.innerHTML = `
+      <div class="checkout-columns" style="align-items:start;">
+        <div>
+          <!-- Start New Message Thread to Admin / Concierge -->
+          <div class="kpi-card" style="margin-bottom:1.25rem;">
+            <h4 style="font-family:var(--font-serif);font-size:1.3rem;margin-bottom:0.5rem;">💬 Compose New Message to Hotel Admin &amp; Concierge</h4>
+            <p style="font-size:0.8rem;color:#64748b;margin-bottom:0.75rem;">
+              Message our Palace Administration, Front Desk, Finance, or Head Concierge directly. Replies appear here in real time.
+            </p>
+            <form onsubmit="window.AureliaApp.handleGuestStartMessageSubmit(event)">
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label>Recipient Department</label>
+                  <select id="gMsgDept">
+                    <option value="Head Concierge & Admin">Head Concierge &amp; Admin</option>
+                    <option value="Front Desk & Reservations">Front Desk &amp; Reservations</option>
+                    <option value="Finance & Folio Billing">Finance &amp; Folio Billing</option>
+                    <option value="Michelin Dining & Sommelier">Le Jardin d’Or (Michelin)</option>
+                    <option value="Thermal Spa & Wellness">Thermal Spa Sanctuary</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Related Booking (Optional)</label>
+                  <select id="gMsgBookingRef">
+                    <option value="">General Account Inquiry</option>
+                    ${(dash.reservations || []).map((r) => `<option value="${escapeHtml(r.booking_reference)}">${escapeHtml(r.booking_reference)} (${escapeHtml(r.check_in)})</option>`).join('')}
+                  </select>
+                </div>
+              </div>
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label>Subject *</label>
+                  <input type="text" id="gMsgSubject" placeholder="e.g. Bespoke Suite Arrangement &amp; Arrival Timing" required />
+                </div>
+                <div class="form-group">
+                  <label>Urgency</label>
+                  <select id="gMsgPriority">
+                    <option value="normal">Standard Privilege</option>
+                    <option value="vip_urgent">VIP Urgent</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Message to Admin *</label>
+                <textarea id="gMsgBody" rows="3" placeholder="Write your message to Hotel Administration or Concierge..." required></textarea>
+              </div>
+              <button type="submit" class="btn-primary" style="width:100%;">Send Message to Admin Inbox</button>
+            </form>
+          </div>
+
+          <!-- Thread List -->
+          <div class="kpi-card">
+            <h4 style="font-family:var(--font-serif);font-size:1.25rem;margin-bottom:0.65rem;">Your Conversation Threads (${threads.length})</h4>
+            ${threads.length === 0 ? `<p style="font-size:0.84rem;color:#64748b;">No conversation threads yet. Send a message above to start chatting with Admin.</p>` : threads.map((t) => `
+              <div onclick="window.AureliaApp.selectGuestMessageThread(${t.id})" style="cursor:pointer;padding:0.75rem;border-radius:6px;margin-bottom:0.5rem;border:1px solid ${t.id === activeGuestThreadId ? 'var(--gold-primary)' : '#e2e8f0'};background:${t.id === activeGuestThreadId ? '#fffbeb' : '#ffffff'};">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <strong style="font-size:0.86rem;"><code>${escapeHtml(t.thread_reference)}</code> — ${escapeHtml(t.subject)}</strong>
+                  ${t.unread_by_guest > 0 ? `<span class="status-pill confirmed">NEW REPLY (${t.unread_by_guest})</span>` : `<span class="status-pill ${t.status === 'resolved' ? 'confirmed' : 'checked_in'}">${escapeHtml(t.status)}</span>`}
+                </div>
+                <div style="font-size:0.75rem;color:#64748b;margin-top:0.2rem;">
+                  ${escapeHtml(t.department)} ${t.booking_reference ? `• Booking: <code>${escapeHtml(t.booking_reference)}</code>` : ''} • ${t.messages_count || 1} msg(s)
+                </div>
+                <div style="font-size:0.79rem;color:#334155;margin-top:0.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                  <strong>${escapeHtml(t.last_sender_name || '')}:</strong> ${escapeHtml(t.last_message_preview || '')}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Active Conversation Thread Reader & Reply Box -->
+        <div class="kpi-card">
+          ${!activeThreadDetail ? `
+            <div style="text-align:center;padding:2.5rem;color:#64748b;">
+              <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.4rem;">Select or Start a Conversation</h4>
+              <p style="font-size:0.85rem;">Choose any conversation thread on the left or compose a new message to Hotel Administration.</p>
+            </div>
+          ` : `
+            <div style="border-bottom:1px solid #e2e8f0;padding-bottom:0.75rem;margin-bottom:1rem;">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+                <span class="staging-badge">${escapeHtml(activeThreadDetail.thread_reference)} • ${escapeHtml(activeThreadDetail.department)}</span>
+                <span class="status-pill ${activeThreadDetail.status === 'resolved' ? 'confirmed' : 'checked_in'}">${escapeHtml(activeThreadDetail.status)}</span>
+              </div>
+              <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-top:0.35rem;">${escapeHtml(activeThreadDetail.subject)}</h4>
+              ${activeThreadDetail.booking_reference ? `<div style="font-size:0.78rem;color:#64748b;">Linked Reservation: <code>${escapeHtml(activeThreadDetail.booking_reference)}</code></div>` : ''}
+            </div>
+
+            <div style="max-height:380px;overflow-y:auto;padding-right:0.25rem;margin-bottom:1rem;">
+              ${(activeThreadDetail.messages || []).map((msg) => {
+                const isGuest = msg.sender_role === 'guest';
+                return `
+                  <div style="margin-bottom:0.75rem;display:flex;flex-direction:column;align-items:${isGuest ? 'flex-end' : 'flex-start'};">
+                    <div style="max-width:86%;padding:0.75rem 0.95rem;border-radius:10px;background:${isGuest ? '#0b132b' : '#f0fdf4'};color:${isGuest ? '#f8fafc' : '#0f172a'};border:1px solid ${isGuest ? '#1e293b' : '#bbf7d0'};font-size:0.84rem;">
+                      <div style="display:flex;justify-content:space-between;gap:1rem;font-size:0.72rem;margin-bottom:0.3rem;color:${isGuest ? '#d4af63' : '#15803d'};font-weight:700;">
+                        <span>${escapeHtml(msg.sender_name)} (${escapeHtml(msg.sender_role.toUpperCase())})</span>
+                        <span>${escapeHtml(msg.created_at)}</span>
+                      </div>
+                      <div style="white-space:pre-wrap;line-height:1.5;">${escapeHtml(msg.body)}</div>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+
+            <form onsubmit="window.AureliaApp.handleGuestReplyMessageSubmit(event, ${activeThreadDetail.id})" style="border-top:1px solid #e2e8f0;padding-top:0.85rem;">
+              <div class="form-group" style="margin-bottom:0.6rem;">
+                <label>Reply to Hotel Admin / Concierge *</label>
+                <textarea id="gReplyBodyInput" rows="3" placeholder="Write your reply..." required></textarea>
+              </div>
+              <button type="submit" class="btn-primary" style="width:100%;">Send Reply</button>
+            </form>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
+  async function selectGuestMessageThread(threadId) {
+    activeGuestThreadId = Number(threadId);
+    await renderGuestPortal();
+  }
+
+  async function handleGuestStartMessageSubmit(e) {
+    e.preventDefault();
+    try {
+      const res = await apiFetch('/api/guest/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          department: document.getElementById('gMsgDept').value,
+          bookingReference: document.getElementById('gMsgBookingRef').value,
+          subject: document.getElementById('gMsgSubject').value,
+          priority: document.getElementById('gMsgPriority').value,
+          message: document.getElementById('gMsgBody').value
+        })
+      });
+      activeGuestThreadId = res.thread.id;
+      await renderGuestPortal();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleGuestReplyMessageSubmit(e, threadId) {
+    e.preventDefault();
+    try {
+      await apiFetch(`/api/guest/messages/${threadId}/reply`, {
+        method: 'POST',
+        body: JSON.stringify({
+          body: document.getElementById('gReplyBodyInput').value
+        })
+      });
+      activeGuestThreadId = Number(threadId);
+      await renderGuestPortal();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   function renderGuestProfileTab(container, dash) {
     const u = dash.user || state.currentUser;
     const notifs = dash.notifications || [];
@@ -2486,6 +2664,8 @@
         await renderAdminSettingsTab(container);
       } else if (tabName === 'users') {
         await renderAdminUsersTab(container);
+      } else if (tabName === 'messages') {
+        await renderAdminMessagesTab(container);
       } else if (tabName === 'audit') {
         await renderAdminAuditTab(container);
       }
@@ -4072,6 +4252,240 @@ END:VCALENDAR</textarea>
     }
   }
 
+  let activeAdminThreadId = null;
+
+  async function renderAdminMessagesTab(container) {
+    const inboxData = await apiFetch('/api/admin/messages');
+    const threads = inboxData.threads || [];
+    const m = inboxData.metrics || {
+      totalThreads: threads.length,
+      unreadThreadsCount: 0,
+      awaitingStaffCount: 0,
+      resolvedCount: 0
+    };
+
+    if (!activeAdminThreadId && threads.length > 0) {
+      activeAdminThreadId = threads[0].id;
+    }
+
+    let activeThreadDetail = null;
+    if (activeAdminThreadId) {
+      try {
+        const detailRes = await apiFetch(`/api/admin/messages/${activeAdminThreadId}`);
+        activeThreadDetail = detailRes.thread;
+      } catch (_) {
+        activeThreadDetail = null;
+      }
+    }
+
+    container.innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Total Conversation Threads</div>
+          <div class="kpi-value">${m.totalThreads}</div>
+          <div style="font-size:0.75rem;color:#64748b;">Direct Guest &harr; Admin / Concierge Inbox</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Unread Guest Messages</div>
+          <div class="kpi-value" style="color:var(--crimson-err);">${m.unreadThreadsCount}</div>
+          <div style="font-size:0.75rem;color:#64748b;">Threads with new unread guest messages</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Awaiting Staff Reply</div>
+          <div class="kpi-value" style="color:var(--gold-primary);">${m.awaitingStaffCount}</div>
+          <div style="font-size:0.75rem;color:#64748b;">Open / awaiting staff response</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Resolved / Closed</div>
+          <div class="kpi-value" style="color:var(--emerald-ok);">${m.resolvedCount}</div>
+          <div style="font-size:0.75rem;color:#64748b;">Completed guest inquiries</div>
+        </div>
+      </div>
+
+      <div class="checkout-columns" style="align-items:start;">
+        <div>
+          <!-- Admin Thread Inbox List -->
+          <div class="kpi-card" style="margin-bottom:1.25rem;">
+            <h4 style="font-family:var(--font-serif);font-size:1.3rem;margin-bottom:0.65rem;">💬 Guest Messaging Threads (${threads.length})</h4>
+            ${threads.length === 0 ? `<p style="font-size:0.84rem;color:#64748b;">No guest message threads yet.</p>` : threads.map((t) => `
+              <div onclick="window.AureliaApp.selectAdminMessageThread(${t.id})" style="cursor:pointer;padding:0.75rem;border-radius:6px;margin-bottom:0.5rem;border:1px solid ${t.id === activeAdminThreadId ? 'var(--gold-primary)' : '#e2e8f0'};background:${t.id === activeAdminThreadId ? '#fffbeb' : '#ffffff'};">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+                  <strong style="font-size:0.85rem;"><code>${escapeHtml(t.thread_reference)}</code> — ${escapeHtml(t.subject)}</strong>
+                  ${t.unread_by_admin > 0 ? `<span class="status-pill cancelled">UNREAD (${t.unread_by_admin})</span>` : `<span class="status-pill ${t.status === 'resolved' ? 'confirmed' : 'checked_in'}">${escapeHtml(t.status)}</span>`}
+                </div>
+                <div style="font-size:0.75rem;color:#64748b;margin-top:0.2rem;">
+                  Guest: <strong>${escapeHtml(t.guest_name)}</strong> (${escapeHtml(t.guest_email)}) • ${escapeHtml(t.department)} ${t.booking_reference ? `• <code>${escapeHtml(t.booking_reference)}</code>` : ''}
+                </div>
+                <div style="font-size:0.78rem;color:#334155;margin-top:0.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                  <strong>${escapeHtml(t.last_sender_name || '')}:</strong> ${escapeHtml(t.last_message_preview || '')}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+
+          <!-- Initiate New Direct Message to Guest -->
+          <div class="kpi-card">
+            <h4 style="font-family:var(--font-serif);font-size:1.25rem;margin-bottom:0.5rem;">Initiate New Direct Message to Guest</h4>
+            <form onsubmit="window.AureliaApp.handleAdminStartNewThreadSubmit(event)">
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label>Guest Email *</label>
+                  <input type="email" id="admMsgEmail" value="elena.rostova@example.com" required />
+                </div>
+                <div class="form-group">
+                  <label>Guest Name</label>
+                  <input type="text" id="admMsgName" value="Elena Rostova" required />
+                </div>
+              </div>
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label>Department</label>
+                  <select id="admMsgDept">
+                    <option value="Head Concierge & Admin">Head Concierge &amp; Admin</option>
+                    <option value="Front Desk & Reservations">Front Desk &amp; Reservations</option>
+                    <option value="Finance & Folio Billing">Finance &amp; Folio Billing</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Booking Ref (Optional)</label>
+                  <input type="text" id="admMsgBookingRef" placeholder="AUR-2026-PRES01" />
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Subject *</label>
+                <input type="text" id="admMsgSubject" placeholder="Pre-Arrival Suite Welcome &amp; Chauffeur Confirmation" required />
+              </div>
+              <div class="form-group">
+                <label>Message Body *</label>
+                <textarea id="admMsgBody" rows="2" placeholder="Write direct message to guest..." required></textarea>
+              </div>
+              <button type="submit" class="btn-secondary" style="width:100%;">Dispatch Direct Message to Guest</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Admin Thread Reader & Reply Console -->
+        <div class="kpi-card">
+          ${!activeThreadDetail ? `
+            <div style="text-align:center;padding:2.5rem;color:#64748b;">
+              <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.4rem;">Select a Guest Conversation Thread</h4>
+              <p style="font-size:0.85rem;">Click any thread on the left to inspect the conversation and send an official Admin / Concierge reply.</p>
+            </div>
+          ` : `
+            <div style="border-bottom:1px solid #e2e8f0;padding-bottom:0.85rem;margin-bottom:1rem;">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+                <div>
+                  <span class="staging-badge">${escapeHtml(activeThreadDetail.thread_reference)} • ${escapeHtml(activeThreadDetail.department)}</span>
+                  <span class="status-pill ${activeThreadDetail.priority === 'vip_urgent' ? 'cancelled' : 'checked_in'}" style="margin-left:0.35rem;">${escapeHtml(activeThreadDetail.priority)}</span>
+                </div>
+                <div style="display:flex;gap:0.4rem;align-items:center;">
+                  <label style="font-size:0.75rem;color:#64748b;">Thread Status:</label>
+                  <select id="admThreadStatusSelect" style="padding:0.25rem;font-size:0.78rem;" onchange="window.AureliaApp.handleAdminUpdateThreadStatus(${activeThreadDetail.id}, this.value)">
+                    ${['awaiting_staff', 'awaiting_guest', 'resolved', 'closed'].map((st) => `<option value="${st}" ${activeThreadDetail.status === st ? 'selected' : ''}>${st}</option>`).join('')}
+                  </select>
+                </div>
+              </div>
+              <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-top:0.35rem;">${escapeHtml(activeThreadDetail.subject)}</h4>
+              <div style="font-size:0.8rem;color:#475569;margin-top:0.2rem;">
+                Guest: <strong>${escapeHtml(activeThreadDetail.guest_name)}</strong> (<code>${escapeHtml(activeThreadDetail.guest_email)}</code>)
+                ${activeThreadDetail.booking_reference ? ` • Booking: <code>${escapeHtml(activeThreadDetail.booking_reference)}</code>` : ''}
+              </div>
+            </div>
+
+            <div style="max-height:380px;overflow-y:auto;padding-right:0.25rem;margin-bottom:1rem;">
+              ${(activeThreadDetail.messages || []).map((msg) => {
+                const isStaff = msg.sender_role !== 'guest';
+                return `
+                  <div style="margin-bottom:0.75rem;display:flex;flex-direction:column;align-items:${isStaff ? 'flex-end' : 'flex-start'};">
+                    <div style="max-width:86%;padding:0.75rem 0.95rem;border-radius:10px;background:${isStaff ? '#0b132b' : '#f8fafc'};color:${isStaff ? '#f8fafc' : '#0f172a'};border:1px solid ${isStaff ? '#1e293b' : '#cbd5e1'};font-size:0.84rem;">
+                      <div style="display:flex;justify-content:space-between;gap:1rem;font-size:0.72rem;margin-bottom:0.3rem;color:${isStaff ? '#d4af63' : '#475569'};font-weight:700;">
+                        <span>${escapeHtml(msg.sender_name)} (${escapeHtml(msg.sender_role.toUpperCase())})</span>
+                        <span>${escapeHtml(msg.created_at)}</span>
+                      </div>
+                      <div style="white-space:pre-wrap;line-height:1.5;">${escapeHtml(msg.body)}</div>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+
+            <form onsubmit="window.AureliaApp.handleAdminReplyMessageSubmit(event, ${activeThreadDetail.id})" style="border-top:1px solid #e2e8f0;padding-top:0.85rem;">
+              <div class="form-group" style="margin-bottom:0.65rem;">
+                <label>Official Admin / Concierge Reply to ${escapeHtml(activeThreadDetail.guest_name)} *</label>
+                <textarea id="admReplyBodyInput" rows="3" placeholder="Type your reply to the guest..." required></textarea>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+                <div style="display:flex;align-items:center;gap:0.4rem;font-size:0.8rem;">
+                  <label>Set status after reply:</label>
+                  <select id="admReplyNextStatus" style="padding:0.35rem;">
+                    <option value="awaiting_guest">awaiting_guest</option>
+                    <option value="resolved">resolved</option>
+                  </select>
+                </div>
+                <button type="submit" class="btn-primary">Send Reply &amp; Notify User</button>
+              </div>
+            </form>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
+  async function selectAdminMessageThread(threadId) {
+    activeAdminThreadId = Number(threadId);
+    await loadAdminTab('messages');
+  }
+
+  async function handleAdminStartNewThreadSubmit(e) {
+    e.preventDefault();
+    try {
+      const res = await apiFetch('/api/admin/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          guestEmail: document.getElementById('admMsgEmail').value,
+          guestName: document.getElementById('admMsgName').value,
+          department: document.getElementById('admMsgDept').value,
+          bookingReference: document.getElementById('admMsgBookingRef').value,
+          subject: document.getElementById('admMsgSubject').value,
+          message: document.getElementById('admMsgBody').value
+        })
+      });
+      activeAdminThreadId = res.thread.id;
+      await loadAdminTab('messages');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleAdminReplyMessageSubmit(e, threadId) {
+    e.preventDefault();
+    try {
+      await apiFetch(`/api/admin/messages/${threadId}/reply`, {
+        method: 'POST',
+        body: JSON.stringify({
+          body: document.getElementById('admReplyBodyInput').value,
+          status: document.getElementById('admReplyNextStatus').value
+        })
+      });
+      activeAdminThreadId = Number(threadId);
+      await loadAdminTab('messages');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleAdminUpdateThreadStatus(threadId, status) {
+    try {
+      await apiFetch(`/api/admin/messages/${threadId}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status })
+      });
+      await loadAdminTab('messages');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   window.AureliaApp = {
     init,
     setLanguage,
@@ -4117,12 +4531,19 @@ END:VCALENDAR</textarea>
     logout,
     quickGuestLogin,
     switchGuestTab,
+    selectGuestMessageThread,
+    handleGuestStartMessageSubmit,
+    handleGuestReplyMessageSubmit,
     handleCreateConciergeRequestSubmit,
     cancelGuestWaitlistEntry,
     handleSaveGuestProfileSubmit,
     handleChangeGuestPasswordSubmit,
     quickStaffLogin,
     switchAdminTab,
+    selectAdminMessageThread,
+    handleAdminStartNewThreadSubmit,
+    handleAdminReplyMessageSubmit,
+    handleAdminUpdateThreadStatus,
     handleAdminWalkInSubmit,
     adminUpdateBookingStatus,
     adminConfirmBalancePayment,

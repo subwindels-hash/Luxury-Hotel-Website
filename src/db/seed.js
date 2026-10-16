@@ -735,6 +735,53 @@ function seedDatabase(customDb = null) {
       insertTemplate.run(t.code, t.name, t.channel, t.subject_template, t.body_template);
     }
 
+    // 8. Seed Initial Guest-to-Admin Messaging Inbox Thread
+    const guestUser = db.prepare("SELECT id FROM users WHERE email = 'elena.rostova@example.com'").get();
+    const adminUser = db.prepare("SELECT id FROM users WHERE email = 'admin@maisonaurelia.luxury'").get();
+    const threadRes = db.prepare(`
+      INSERT INTO message_threads (
+        thread_reference, user_id, guest_name, guest_email, booking_reference,
+        department, subject, status, priority, unread_by_admin, unread_by_guest
+      ) VALUES (
+        'MSG-VIP001', ?, 'Elena Rostova', 'elena.rostova@example.com', 'AUR-2026-PRES01',
+        'Head Concierge & Admin', 'Private Helipad Arrival & Vintage Krug Pairing Inquiry',
+        'awaiting_staff', 'vip_urgent', 1, 0
+      )
+    `).run(guestUser ? guestUser.id : null);
+
+    const seededThreadId = Number(threadRes.lastInsertRowid);
+    const insMsg = db.prepare(`
+      INSERT INTO thread_messages (thread_id, sender_user_id, sender_role, sender_name, sender_email, body, is_read)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    insMsg.run(
+      seededThreadId,
+      guestUser ? guestUser.id : null,
+      'guest',
+      'Elena Rostova',
+      'elena.rostova@example.com',
+      'Bonjour Henri, we will be arriving via helicopter from Zurich at 15:30. Could you confirm our rooftop helipad clearance and arrange two glasses of chilled Krug Grande Cuvée in the Presidential Suite?',
+      1
+    );
+    insMsg.run(
+      seededThreadId,
+      adminUser ? adminUser.id : null,
+      'admin',
+      'Henri de Valois (Palace Director)',
+      'admin@maisonaurelia.luxury',
+      'Madame Rostova, our rooftop helipad is reserved for your 15:30 touch-down and our Head Butler has already placed a bottle of Krug Grande Cuvée on ice in Suite #701.',
+      1
+    );
+    insMsg.run(
+      seededThreadId,
+      guestUser ? guestUser.id : null,
+      'guest',
+      'Elena Rostova',
+      'elena.rostova@example.com',
+      'Wonderful! May we also request a 20:00 corner table by the fountain at Le Jardin d’Or for our first evening?',
+      0
+    );
+
     return { seeded: true, categoriesCount: categories.length, roomsCount: physicalRooms.length };
   });
 }
