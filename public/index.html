@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Maison Aurélia Grand Palace &amp; Sanctuary | Five-Star Hotel &amp; Online Reservations</title>
+  <meta name="description" content="Explore luxury suites and individually numbered rooms at Maison Aurélia Grand Palace & Sanctuary. Check real-time availability, hold room inventory, and book online with instant confirmation." />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <!-- Staging / Sample Inventory Transparency Banner (Section 10 Requirement) -->
+  <div id="stagingBanner" class="staging-banner" role="region" aria-label="Environment Notice">
+    <div>
+      <span id="envModeBadge" class="staging-badge">STAGING SAMPLE INVENTORY</span>
+      <span id="envBannerText">Initial rooms are pre-configured sample inventory and can be added, edited, or removed by the Hotel Administrator.</span>
+    </div>
+    <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('admin')">
+      Configure Live Inventory in Admin &rarr;
+    </button>
+  </div>
+
+  <!-- Main Luxury Header -->
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="brand-logo" onclick="window.AureliaApp.switchView('home')" role="button" tabindex="0">
+        <div class="brand-crest" aria-hidden="true">MA</div>
+        <div>
+          <span class="brand-title">Maison Aurélia</span>
+          <span class="brand-sub">Grand Palace &amp; Sanctuary</span>
+        </div>
+      </div>
+
+      <nav class="main-nav" aria-label="Main Navigation">
+        <button type="button" class="nav-link active" data-view="home" data-i18n="nav_rooms" onclick="window.AureliaApp.switchView('home')">Suites &amp; Rooms</button>
+        <button type="button" class="nav-link" onclick="window.AureliaApp.scrollToSection('visualizer3dSection')" data-i18n="nav_visualizer">3D Suite Explorer</button>
+        <button type="button" class="nav-link" onclick="window.AureliaApp.scrollToSection('experiencesSection')" data-i18n="nav_experiences">Dining &amp; Sanctuary</button>
+        <button type="button" class="nav-link" data-view="reviews" data-i18n="nav_reviews" onclick="window.AureliaApp.switchView('reviews')">⭐ Customer Reviews</button>
+        <button type="button" class="nav-link" data-view="contact" data-i18n="nav_contact" onclick="window.AureliaApp.switchView('contact')">📍 Contact &amp; Map</button>
+        <button type="button" class="nav-link" data-view="lookup" data-i18n="nav_lookup" onclick="window.AureliaApp.switchView('lookup')">My Booking</button>
+        <button type="button" class="nav-link" data-view="portal" data-i18n="nav_portal" onclick="window.AureliaApp.switchView('portal')">Guest Privé</button>
+        <button type="button" class="nav-link" onclick="window.AureliaApp.openMessagingInboxDirect()">💬 Messages Inbox</button>
+        <button type="button" class="nav-link admin-pill" data-view="admin" data-i18n="nav_admin" onclick="window.AureliaApp.switchView('admin')">Staff Admin</button>
+      </nav>
+
+      <div class="header-controls">
+        <select id="languageSelect" class="luxury-select" aria-label="Select Language" onchange="window.AureliaApp.setLanguage(this.value)">
+          <option value="en">EN • English</option>
+          <option value="fr">FR • Français</option>
+          <option value="es">ES • Español</option>
+          <option value="ar">AR • العربية</option>
+        </select>
+
+        <select id="currencySelect" class="luxury-select" aria-label="Select Currency" onchange="window.AureliaApp.setCurrency(this.value)">
+          <option value="USD">USD ($)</option>
+          <option value="EUR">EUR (€)</option>
+          <option value="GBP">GBP (£)</option>
+          <option value="CHF">CHF</option>
+          <option value="AED">AED</option>
+          <option value="NGN">NGN (₦)</option>
+        </select>
+      </div>
+    </div>
+  </header>
+
+  <!-- Active Checkout Hold Floating Bar -->
+  <div id="activeHoldBar" class="hold-floating-banner hidden" role="status" aria-live="polite">
+    <span>
+      <strong>Inventory Hold Active:</strong> Your selected room(s) are locked for your checkout (<code id="activeHoldTokenDisplay"></code>)
+    </span>
+    <span id="activeHoldCountdown" class="hold-timer-pill">10:00</span>
+    <button type="button" class="btn-primary" style="padding:0.35rem 0.85rem;font-size:0.8rem;" onclick="window.AureliaApp.reopenCheckoutModal()">
+      Resume Checkout
+    </button>
+    <button type="button" class="staging-banner-action" style="color:#fff;border-color:#fff;" onclick="window.AureliaApp.cancelActiveHold()">
+      Release Hold
+    </button>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- VIEW 1: PUBLIC LUXURY HOTEL WEBSITE & REAL-TIME CATALOGUE             -->
+  <!-- ===================================================================== -->
+  <main id="view-home">
+    <section class="hero-section">
+      <div class="hero-content">
+        <span class="hero-eyebrow" data-i18n="hero_eyebrow">FIVE-STAR GRAND PALACE • WATERFRONT SANCTUARY</span>
+        <h1 class="hero-title" data-i18n="hero_title">An Architecture of Stillness &amp; Timeless Hospitality</h1>
+        <p class="hero-subtitle" data-i18n="hero_subtitle">
+          Explore individually numbered residences, suites, and courtyard chambers with real-time database availability, expiring checkout holds, and guaranteed reservations.
+        </p>
+      </div>
+    </section>
+
+    <!-- Real-Time Availability Search Engine Bar -->
+    <div class="container">
+      <section class="booking-search-bar" aria-label="Room Availability Search">
+        <form id="availabilitySearchForm" onsubmit="window.AureliaApp.handleSearchSubmit(event)">
+          <div class="search-grid">
+            <div class="search-field">
+              <label for="searchCheckIn" data-i18n="search_checkin">Check-In Date</label>
+              <input type="date" id="searchCheckIn" required />
+            </div>
+            <div class="search-field">
+              <label for="searchCheckOut" data-i18n="search_checkout">Check-Out Date</label>
+              <input type="date" id="searchCheckOut" required />
+            </div>
+            <div class="search-field">
+              <label for="searchAdults" data-i18n="search_adults">Adults</label>
+              <select id="searchAdults">
+                <option value="1">1 Adult</option>
+                <option value="2" selected>2 Adults</option>
+                <option value="3">3 Adults</option>
+                <option value="4">4 Adults</option>
+                <option value="5">5 Adults</option>
+                <option value="6">6 Adults</option>
+              </select>
+            </div>
+            <div class="search-field">
+              <label for="searchChildren" data-i18n="search_children">Children</label>
+              <select id="searchChildren">
+                <option value="0" selected>0 Children</option>
+                <option value="1">1 Child</option>
+                <option value="2">2 Children</option>
+                <option value="3">3 Children</option>
+              </select>
+            </div>
+            <div class="search-field">
+              <label for="searchRoomsCount" data-i18n="search_rooms">Rooms Required</label>
+              <select id="searchRoomsCount">
+                <option value="1" selected>1 Room</option>
+                <option value="2">2 Rooms</option>
+                <option value="3">3 Rooms</option>
+                <option value="4">4 Rooms</option>
+              </select>
+            </div>
+            <div class="search-field">
+              <label for="searchCategory" data-i18n="search_category">Room Category</label>
+              <select id="searchCategory">
+                <option value="all" data-i18n="cat_all">All Categories (10)</option>
+              </select>
+            </div>
+            <div class="search-field">
+              <button type="submit" class="btn-primary" style="width:100%;" data-i18n="search_btn">
+                Check Live Availability
+              </button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <!-- Catalogue Header & Category Filter Pills -->
+      <div class="section-header" id="catalogueSection">
+        <span class="section-eyebrow">COMPLETE HOTEL ROOM &amp; SUITE CATALOGUE</span>
+        <h2 class="section-title">Individually Numbered Rooms &amp; Signature Suites</h2>
+        <p id="searchSummarySubtitle" style="color:var(--text-muted);margin-top:0.4rem;font-size:0.95rem;"></p>
+      </div>
+
+      <div id="categoryPillsContainer" class="category-pills" role="tablist" aria-label="Filter by Room Category"></div>
+
+      <!-- Multi-Room Selection Tray -->
+      <div id="multiRoomTray" class="multi-room-tray hidden">
+        <div>
+          <strong style="color:var(--gold-bright);">Multi-Room Selection Active:</strong>
+          <span id="multiRoomTrayText" style="margin-left:0.5rem;font-size:0.9rem;">Select rooms below to book together in one atomic reservation.</span>
+        </div>
+        <div style="display:flex;gap:0.65rem;align-items:center;">
+          <button type="button" class="btn-secondary" style="color:#fff;border-color:rgba(255,255,255,0.4);" onclick="window.AureliaApp.clearMultiRoomSelection()">Clear Selection</button>
+          <button type="button" id="multiRoomBookBtn" class="btn-primary" onclick="window.AureliaApp.startMultiRoomCheckout()">Book Selected Rooms</button>
+        </div>
+      </div>
+
+      <!-- Rooms Catalogue Grid -->
+      <div id="roomsCatalogueGrid" class="rooms-grid" aria-live="polite"></div>
+    </div>
+
+    <!-- Interactive 3D Suite Architecture Visualizer -->
+    <section id="visualizer3dSection" class="visualizer-3d-section">
+      <div class="container">
+        <div class="section-header" style="margin-top:0;">
+          <span class="section-eyebrow">INTERACTIVE SPATIAL ARCHITECTURE</span>
+          <h2 class="section-title" style="color:#ffffff;">3D Isometric Suite &amp; Floorplan Explorer</h2>
+          <p style="color:#cbd5e1;max-width:680px;margin:0.5rem auto 0;font-size:0.94rem;">
+            Inspect the spatial zoning, acoustic privacy wings, and terrace orientation of our signature suites. Hover over any architectural zone or adjust the 3D perspective angles.
+          </p>
+        </div>
+
+        <div class="stage-3d-wrapper">
+          <div class="viewport-3d">
+            <div id="floorplan3dPlate" class="floorplan-3d-plate">
+              <!-- Populated dynamically by suite selector -->
+            </div>
+            <div style="margin-top:2rem;display:flex;gap:1.5rem;flex-wrap:wrap;justify-content:center;font-size:0.8rem;color:#cbd5e1;">
+              <label>
+                Pitch Angle (X):
+                <input type="range" id="tiltXSlider" min="20" max="65" value="48" oninput="window.AureliaApp.update3dPerspective()" />
+              </label>
+              <label>
+                Rotation (Z):
+                <input type="range" id="tiltZSlider" min="-55" max="25" value="-28" oninput="window.AureliaApp.update3dPerspective()" />
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1.25rem;" id="suite3dButtons">
+              <button type="button" class="category-pill active" onclick="window.AureliaApp.select3dSuite('presidential', this)">Presidential #701 (240m²)</button>
+              <button type="button" class="category-pill" onclick="window.AureliaApp.select3dSuite('penthouse', this)">Sky Penthouse #PH-01 (310m²)</button>
+              <button type="button" class="category-pill" onclick="window.AureliaApp.select3dSuite('luxury', this)">Grand Salon #501 (110m²)</button>
+              <button type="button" class="category-pill" onclick="window.AureliaApp.select3dSuite('accessible', this)">Barrier-Free Suite #105 (62m²)</button>
+            </div>
+            <h3 id="suite3dTitle" style="font-family:var(--font-serif);font-size:1.85rem;color:var(--gold-bright);margin-bottom:0.5rem;">
+              The Imperial Presidential Residence (#701)
+            </h3>
+            <p id="suite3dDesc" style="color:#d1d5db;font-size:0.92rem;margin-bottom:1.25rem;">
+              Occupying the private 7th-floor noble corner wing with security airlock foyer, 10-seat dining hall, private thermal sauna, and wrap-around waterfront terrace.
+            </p>
+            <div id="suite3dSpecs" style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1.5rem;"></div>
+            <button type="button" class="btn-primary" onclick="window.AureliaApp.scrollToSection('catalogueSection')">
+              Check Suite Availability &amp; Book
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Luxury Facilities, Dining, Wellness, Packages & FAQ -->
+    <div class="container" id="experiencesSection">
+      <div class="section-header">
+        <span class="section-eyebrow">FIVE-STAR HOSPITALITY &amp; BESPOKE EXTRAS</span>
+        <h2 class="section-title">Gastronomy, Thermal Sanctuary &amp; Private Fleet</h2>
+        <p style="color:var(--text-muted);max-width:720px;margin:0.5rem auto 0;font-size:0.95rem;">
+          Enhance any reservation during checkout with Michelin-starred dining plans, Rolls-Royce airport transfers, thermal spa rituals, or romantic occasion packages.
+        </p>
+      </div>
+
+      <div class="experiences-grid">
+        <article class="experience-card">
+          <img src="/images/dining-michelin.jpg" alt="Le Jardin d'Or Three-Michelin-Starred Restaurant" />
+          <div class="experience-card-body">
+            <span class="section-eyebrow" style="margin-bottom:0.2rem;">CULINARY EXCELLENCE • 24H IN-SUITE DINING</span>
+            <h3 style="font-family:var(--font-serif);font-size:1.45rem;margin-bottom:0.5rem;">Le Jardin d’Or &amp; Sommelier Cellar</h3>
+            <p style="font-size:0.88rem;color:var(--text-muted);margin-bottom:0.9rem;">
+              Savor seasonal tasting menus crafted by our Three-Michelin-Starred brigade, or summon private 24-hour silver-service in-suite dining and caviar breakfast service.
+            </p>
+            <div style="font-size:0.8rem;font-weight:700;color:var(--gold-primary);">
+              Add-on Options: Daily Breakfast ($65/guest/night) • Half-Board Gastronomy ($195/guest/night)
+            </div>
+          </div>
+        </article>
+
+        <article class="experience-card">
+          <img src="/images/spa-sanctuary.jpg" alt="Thermal Spa & Indoor-Outdoor Infinity Pool" />
+          <div class="experience-card-body">
+            <span class="section-eyebrow" style="margin-bottom:0.2rem;">THERMAL WELLNESS • TECHNOGYM ATELIER</span>
+            <h3 style="font-family:var(--font-serif);font-size:1.45rem;margin-bottom:0.5rem;">Travertine Thermal Sanctuary &amp; Pool</h3>
+            <p style="font-size:0.88rem;color:var(--text-muted);margin-bottom:0.9rem;">
+              Carved from natural limestone, our wellness wing features a heated indoor-outdoor infinity pool, snow-mist cryotherapy, Himalayan salt grotto, and private Technogym studio.
+            </p>
+            <div style="font-size:0.8rem;font-weight:700;color:var(--gold-primary);">
+              Complimentary Access for All Guests • Couples 90-Min Hammam Ritual ($420)
+            </div>
+          </div>
+        </article>
+
+        <article class="experience-card">
+          <img src="/images/suite-penthouse.jpg" alt="Chauffeur Transfers & Honeymoon Packages" />
+          <div class="experience-card-body">
+            <span class="section-eyebrow" style="margin-bottom:0.2rem;">PRIVATE AVIATION • CHAUFFEUR • OCCASIONS</span>
+            <h3 style="font-family:var(--font-serif);font-size:1.45rem;margin-bottom:0.5rem;">Rolls-Royce Fleet &amp; Imperial Packages</h3>
+            <p style="font-size:0.88rem;color:var(--text-muted);margin-bottom:0.9rem;">
+              Arrive effortlessly via our Rolls-Royce Phantom VIII airport chauffeur service or rooftop helipad. Celebrate milestones with our Dom Pérignon &amp; 100 Ecuadorian Roses package.
+            </p>
+            <div style="font-size:0.8rem;font-weight:700;color:var(--gold-primary);">
+              Chauffeur Transfer ($280) • Imperial Romance Package ($490) • Direct Promo: <code>AURELIA10</code>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <!-- Location, Contact & Frequently Asked Questions -->
+      <div class="checkout-columns" style="margin-bottom:4rem;align-items:start;">
+        <div class="price-summary-card" style="position:static;">
+          <span class="section-eyebrow">FREQUENTLY ASKED QUESTIONS</span>
+          <h3 style="font-family:var(--font-serif);font-size:1.65rem;margin-bottom:1rem;">Reservation &amp; Hospitality Policies</h3>
+          <details style="margin-bottom:0.85rem;border-bottom:1px solid var(--border-subtle);padding-bottom:0.75rem;" open>
+            <summary style="font-weight:700;cursor:pointer;">How does Maison Aurélia prevent double bookings?</summary>
+            <p style="font-size:0.86rem;color:var(--text-muted);margin-top:0.4rem;">
+              Every room selection places an immediate expiring database hold (10 minutes) backed by SQLite <code>BEGIN IMMEDIATE</code> serialised transactions and database-level exclusion triggers. Even if two guests click confirm at the same millisecond, only one transaction succeeds.
+            </p>
+          </details>
+          <details style="margin-bottom:0.85rem;border-bottom:1px solid var(--border-subtle);padding-bottom:0.75rem;">
+            <summary style="font-weight:700;cursor:pointer;">What are the check-in, check-out, and same-day turnover rules?</summary>
+            <p style="font-size:0.86rem;color:var(--text-muted);margin-top:0.4rem;">
+              Check-in begins at 15:00 and check-out is until 12:00 noon local hotel time. Under our standard turnover policy, a departure date is available for an incoming guest arriving that afternoon.
+            </p>
+          </details>
+          <details style="margin-bottom:0.85rem;border-bottom:1px solid var(--border-subtle);padding-bottom:0.75rem;">
+            <summary style="font-weight:700;cursor:pointer;">What payment options and deposit plans are accepted?</summary>
+            <p style="font-size:0.86rem;color:var(--text-muted);margin-top:0.4rem;">
+              Guests may choose between paying 100% in full or a 30% booking deposit online via tokenised credit/debit card, verified bank wire transfer, or authorised Payment-at-Hotel guarantee.
+            </p>
+          </details>
+          <details>
+            <summary style="font-weight:700;cursor:pointer;">How do cancellations and automatic refunds work?</summary>
+            <p style="font-size:0.86rem;color:var(--text-muted);margin-top:0.4rem;">
+              Cancellations made more than 48 hours before arrival receive a 100% automatic refund to the original payment method and immediately release the physical room back into live inventory.
+            </p>
+          </details>
+        </div>
+
+        <div class="price-summary-card" style="position:static;background:var(--bg-obsidian);color:var(--text-light);">
+          <span class="section-eyebrow">WATERFRONT SANCTUARY QUARTER</span>
+          <h3 style="font-family:var(--font-serif);font-size:1.65rem;color:var(--gold-bright);margin-bottom:0.75rem;">Location &amp; Private Concierge</h3>
+          <p style="font-size:0.88rem;color:#cbd5e1;margin-bottom:1rem;">
+            18 Quai du Mont-Blanc, Waterfront Sanctuary Quarter<br />
+            Direct Concierge Desk: <strong>+41 22 819 0000</strong> • <strong>concierge@maisonaurelia.luxury</strong><br />
+            Coordinates: 46.2085° N, 6.1496° E (Private Yacht Pier &amp; Helipad On-Site)
+          </p>
+          <!-- Stylized SVG Interactive Map -->
+          <div style="border:1px solid var(--border-dark);border-radius:var(--radius-sm);overflow:hidden;background:#0f172a;padding:1rem;text-align:center;">
+            <svg viewBox="0 0 500 190" style="width:100%;height:auto;display:block;">
+              <rect width="500" height="190" fill="#0f172a" />
+              <path d="M0,130 Q160,105 310,140 T500,120 L500,190 L0,190 Z" fill="#1e3a5f" opacity="0.7" />
+              <path d="M40,20 L180,115 M260,15 L220,125 M390,20 L350,130 M10,80 L490,95" stroke="#334155" stroke-width="2" />
+              <circle cx="245" cy="95" r="24" fill="rgba(212,175,99,0.2)" />
+              <circle cx="245" cy="95" r="8" fill="#d4af63" />
+              <text x="245" y="65" text-anchor="middle" fill="#f8f1e0" font-size="12" font-weight="bold">MAISON AURÉLIA PALACE</text>
+              <text x="245" y="165" text-anchor="middle" fill="#93c5fd" font-size="11" letter-spacing="2">LAKEFRONT &amp; PRIVATE MARINA PIER</text>
+            </svg>
+          </div>
+          <div style="margin-top:0.9rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <button type="button" class="btn-primary" style="flex:1;padding:0.55rem 0.9rem;font-size:0.82rem;" onclick="window.AureliaApp.switchView('contact')">
+              📍 Open Contact Page, Interactive Map &amp; Message Admin &rarr;
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- VIEW 2A: CONTACT PAGE WITH INTERACTIVE MAP & DIRECT ADMIN INBOX FORM  -->
+  <!-- ===================================================================== -->
+  <section id="view-contact" class="container hidden" style="padding-top:2.5rem;padding-bottom:4rem;">
+    <div class="section-header" style="margin-top:0;display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:1rem;">
+      <div>
+        <span class="section-eyebrow">WATERFRONT SANCTUARY QUARTER • 18 QUAI DU MONT-BLANC, GENEVA</span>
+        <h2 class="section-title" style="margin-bottom:0.35rem;">Contact Maison Aurélia &amp; Interactive Palace Map</h2>
+        <p style="color:var(--text-muted);font-size:0.95rem;max-width:760px;">
+          Explore our Lakefront Sanctuary coordinates, private yacht pier, and helipad routes on the interactive map below, or send a message directly into our <strong>Admin &amp; Head Concierge Messaging Inbox</strong>.
+        </p>
+      </div>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.switchToAdminMessagingInbox()">
+          💬 View Admin Messaging Inbox &rarr;
+        </button>
+        <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.switchToGuestMessagingInbox()">
+          👤 Open My Guest Inbox
+        </button>
+      </div>
+    </div>
+
+    <!-- Main 2-Column Contact Layout: Interactive Map + Direct-to-Admin-Inbox Form -->
+    <div class="checkout-columns" style="align-items:start;margin-bottom:2.5rem;">
+      <!-- LEFT COLUMN: Interactive Multi-Layer Map, Clickable Pins & Palace Directory -->
+      <div style="display:flex;flex-direction:column;gap:1.5rem;">
+        <div class="price-summary-card" style="position:static;background:var(--bg-obsidian);color:var(--text-light);">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.75rem;">
+            <div>
+              <span class="section-eyebrow" style="margin-bottom:0.15rem;">INTERACTIVE PALACE CARTOGRAPHY &amp; ARRIVAL CORRIDORS</span>
+              <h3 style="font-family:var(--font-serif);font-size:1.5rem;color:var(--gold-bright);">Lake Geneva Waterfront &amp; Sanctuary Map</h3>
+            </div>
+            <span class="status-pill confirmed" style="font-size:0.72rem;">GPS: 46.2085° N, 6.1496° E</span>
+          </div>
+
+          <!-- Map Layer / Corridor Switcher -->
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.85rem;">
+            <button type="button" class="nearby-date-btn contact-map-mode-btn" data-mode="palace" onclick="window.AureliaApp.setContactMapMode('palace')" style="background:rgba(212,175,99,0.22);color:var(--gold-bright);border-color:var(--gold-primary);">
+              1. Palace &amp; Lakefront Quarter
+            </button>
+            <button type="button" class="nearby-date-btn contact-map-mode-btn" data-mode="aviation" onclick="window.AureliaApp.setContactMapMode('aviation')" style="background:rgba(255,255,255,0.06);color:#e2e8f0;border-color:#334155;">
+              2. Airport &amp; Helipad Route
+            </button>
+            <button type="button" class="nearby-date-btn contact-map-mode-btn" data-mode="marina" onclick="window.AureliaApp.setContactMapMode('marina')" style="background:rgba(255,255,255,0.06);color:#e2e8f0;border-color:#334155;">
+              3. Private Yacht Pier &amp; Landmarks
+            </button>
+          </div>
+
+          <!-- Interactive SVG Map with Clickable Landmarks -->
+          <div style="border:1px solid var(--border-dark);border-radius:var(--radius-sm);overflow:hidden;background:#0b1325;position:relative;">
+            <svg id="contactInteractiveSvgMap" viewBox="0 0 680 340" style="width:100%;height:auto;display:block;cursor:pointer;" aria-label="Interactive Map of Maison Aurélia Geneva">
+              <defs>
+                <linearGradient id="lakeWaterGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#0f294a" />
+                  <stop offset="100%" stop-color="#1e3a5f" />
+                </linearGradient>
+                <radialGradient id="palaceGlow" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="rgba(212,175,99,0.45)" />
+                  <stop offset="100%" stop-color="rgba(212,175,99,0)" />
+                </radialGradient>
+              </defs>
+
+              <!-- Landmass & Grid -->
+              <rect width="680" height="340" fill="#0b1325" />
+              <g stroke="#1e293b" stroke-width="1">
+                <line x1="0" y1="60" x2="680" y2="60" />
+                <line x1="0" y1="120" x2="680" y2="120" />
+                <line x1="0" y1="180" x2="680" y2="180" />
+                <line x1="120" y1="0" x2="120" y2="340" />
+                <line x1="260" y1="0" x2="260" y2="340" />
+                <line x1="400" y1="0" x2="400" y2="340" />
+                <line x1="540" y1="0" x2="540" y2="340" />
+              </g>
+
+              <!-- Botanical Sanctuary Parkland -->
+              <path d="M260,70 Q340,55 430,85 L440,165 Q340,155 255,165 Z" fill="#0f2926" opacity="0.75" />
+              <text x="345" y="102" text-anchor="middle" fill="#34d399" font-size="9" letter-spacing="1.5" opacity="0.85">PARC MOYNIER &amp; PALACE GARDENS</text>
+
+              <!-- Lake Geneva (Lac Léman) Basin -->
+              <path d="M0,210 Q190,175 370,205 T680,185 L680,340 L0,340 Z" fill="url(#lakeWaterGrad)" />
+              <path d="M0,210 Q190,175 370,205 T680,185" fill="none" stroke="#60a5fa" stroke-width="2" opacity="0.55" />
+              <text x="515" y="295" text-anchor="middle" fill="#93c5fd" font-size="13" letter-spacing="3" font-weight="bold" opacity="0.8">LAC LÉMAN (LAKE GENEVA)</text>
+
+              <!-- Arterial Boulevards & Chauffeur Transfer Corridors -->
+              <path d="M75,48 Q165,85 215,130 L350,155 L560,125" fill="none" stroke="#475569" stroke-width="4" />
+              <path d="M215,130 L350,155" fill="none" stroke="#d4af63" stroke-width="2.5" stroke-dasharray="6,4" id="mapRouteCorridorLine" />
+              <path d="M350,155 L350,238" fill="none" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4,3" />
+              <text x="200" y="182" fill="#94a3b8" font-size="10" letter-spacing="1">QUAI DU MONT-BLANC PROMENADE</text>
+
+              <!-- Jet d'Eau Water Landmark -->
+              <path d="M545,255 Q545,195 552,195 Q559,195 559,255" fill="none" stroke="#bae6fd" stroke-width="2.5" stroke-dasharray="3,2" />
+              <text x="552" y="272" text-anchor="middle" fill="#bae6fd" font-size="9.5">JET D'EAU FOUNTAIN</text>
+
+              <!-- PIN 1: Geneva International Airport (GVA) VIP Tarmac -->
+              <g onclick="window.AureliaApp.selectContactMapPin('airport')" style="cursor:pointer;">
+                <circle cx="85" cy="52" r="16" fill="rgba(56,189,248,0.18)" />
+                <circle cx="85" cy="52" r="7" fill="#38bdf8" stroke="#fff" stroke-width="1.5" />
+                <text x="85" y="30" text-anchor="middle" fill="#e0f2fe" font-size="10.5" font-weight="bold">✈ GVA VIP TARMAC (15 MIN)</text>
+              </g>
+
+              <!-- PIN 2: Geneva Cornavin Grand Rail Terminal -->
+              <g onclick="window.AureliaApp.selectContactMapPin('rail')" style="cursor:pointer;">
+                <circle cx="215" cy="130" r="14" fill="rgba(148,163,184,0.22)" />
+                <circle cx="215" cy="130" r="6.5" fill="#cbd5e1" stroke="#0f172a" stroke-width="1.5" />
+                <text x="215" y="110" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="bold">🚆 CORNAVIN RAIL (6 MIN)</text>
+              </g>
+
+              <!-- PIN 3: MAISON AURÉLIA GRAND PALACE & SANCTUARY (Primary Hub) -->
+              <g onclick="window.AureliaApp.selectContactMapPin('palace')" style="cursor:pointer;">
+                <circle cx="350" cy="155" r="36" fill="url(#palaceGlow)" />
+                <circle cx="350" cy="155" r="11" fill="#d4af63" stroke="#fff" stroke-width="2.5" />
+                <rect x="252" y="116" width="196" height="22" rx="4" fill="rgba(15,23,42,0.9)" stroke="#d4af63" stroke-width="1" />
+                <text x="350" y="131" text-anchor="middle" fill="#f8f1e0" font-size="11" font-weight="bold" letter-spacing="0.8">★ MAISON AURÉLIA PALACE</text>
+              </g>
+
+              <!-- PIN 4: Rooftop Helipad H1 (ICAO: LSMA) -->
+              <g onclick="window.AureliaApp.selectContactMapPin('helipad')" style="cursor:pointer;">
+                <circle cx="435" cy="128" r="15" fill="rgba(245,158,11,0.2)" />
+                <circle cx="435" cy="128" r="7" fill="#f59e0b" stroke="#fff" stroke-width="1.5" />
+                <text x="505" y="132" text-anchor="start" fill="#fde68a" font-size="10" font-weight="bold">🚁 HELIPAD H1 (LSMA)</text>
+              </g>
+
+              <!-- PIN 5: Private Marina Yacht Pier #4 -->
+              <g onclick="window.AureliaApp.selectContactMapPin('pier')" style="cursor:pointer;">
+                <circle cx="350" cy="238" r="16" fill="rgba(96,165,250,0.25)" />
+                <circle cx="350" cy="238" r="7.5" fill="#60a5fa" stroke="#fff" stroke-width="1.5" />
+                <text x="350" y="264" text-anchor="middle" fill="#bfdbfe" font-size="10.5" font-weight="bold">⚓ PRIVATE YACHT PIER #4</text>
+              </g>
+            </svg>
+          </div>
+
+          <!-- Quick Landmark Selector Buttons -->
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.75rem;">
+            <span style="font-size:0.74rem;color:#94a3b8;align-self:center;">Click a Map Pin:</span>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('palace')" style="font-size:0.74rem;">★ Maison Aurélia Palace</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('airport')" style="font-size:0.74rem;">✈ GVA VIP Airport</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('helipad')" style="font-size:0.74rem;">🚁 Rooftop Helipad H1</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('pier')" style="font-size:0.74rem;">⚓ Private Yacht Pier #4</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('rail')" style="font-size:0.74rem;">🚆 Cornavin Terminal</button>
+          </div>
+
+          <!-- Selected Map Pin Details & 1-Click Pre-Fill -->
+          <div id="contactMapSelectedPinBox" style="margin-top:0.85rem;padding:0.9rem;border-radius:var(--radius-sm);background:rgba(255,255,255,0.05);border:1px solid rgba(212,175,99,0.35);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">
+              <div>
+                <span id="contactPinBadge" class="staging-badge" style="margin-bottom:0.25rem;display:inline-block;">PALACE FLAGSHIP COORDINATES</span>
+                <h4 id="contactPinTitle" style="font-family:var(--font-serif);font-size:1.15rem;color:var(--gold-bright);">Maison Aurélia Grand Palace &amp; Sanctuary</h4>
+              </div>
+              <code id="contactPinCoords" style="font-size:0.76rem;color:#93c5fd;">46.2085° N, 6.1496° E</code>
+            </div>
+            <p id="contactPinDesc" style="font-size:0.83rem;color:#cbd5e1;margin:0.45rem 0 0.7rem;">
+              18 Quai du Mont-Blanc, 1201 Geneva, Switzerland. Private gated courtyard with 24/7 Rolls-Royce valet reception, underground armoured garage, and direct waterfront promenade access.
+            </p>
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+              <span id="contactPinTransferTime" style="font-size:0.76rem;color:var(--gold-bright);font-weight:700;">
+                Rolls-Royce Chauffeur Standby: Immediate On-Site
+              </span>
+              <button type="button" class="staging-banner-action" onclick="window.AureliaApp.applyMapPinToContactForm()">
+                Attach This Location to My Message &rarr;
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Direct Palace Department Directory Card -->
+        <div class="price-summary-card" style="position:static;">
+          <span class="section-eyebrow">24/7 PALACE DIRECTORY &amp; DIRECT DESKS</span>
+          <h3 style="font-family:var(--font-serif);font-size:1.4rem;margin-bottom:0.75rem;">Direct Department Contacts</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.75rem;font-size:0.83rem;">
+            <div style="padding:0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:#fff;">
+              <strong style="color:var(--text-primary);display:block;">Head Concierge &amp; Admin Desk</strong>
+              <span style="color:var(--text-muted);font-size:0.78rem;">Bespoke itineraries, VIP protocol &amp; general inquiries</span>
+              <div style="margin-top:0.35rem;font-weight:700;color:var(--gold-primary);">+41 22 819 0000</div>
+              <div style="font-size:0.76rem;color:var(--text-muted);">concierge@maisonaurelia.luxury</div>
+            </div>
+            <div style="padding:0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:#fff;">
+              <strong style="color:var(--text-primary);display:block;">Private Aviation &amp; Chauffeur</strong>
+              <span style="color:var(--text-muted);font-size:0.78rem;">GVA VIP tarmac, Helipad H1 &amp; Rolls-Royce fleet</span>
+              <div style="margin-top:0.35rem;font-weight:700;color:var(--gold-primary);">+41 22 819 0088</div>
+              <div style="font-size:0.76rem;color:var(--text-muted);">aviation@maisonaurelia.luxury</div>
+            </div>
+            <div style="padding:0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:#fff;">
+              <strong style="color:var(--text-primary);display:block;">2★ Michelin Dining &amp; Sanctuary</strong>
+              <span style="color:var(--text-muted);font-size:0.78rem;">L'Orangerie du Lac Chef's Table &amp; Thermal Spa</span>
+              <div style="margin-top:0.35rem;font-weight:700;color:var(--gold-primary);">+41 22 819 0042</div>
+              <div style="font-size:0.76rem;color:var(--text-muted);">dining@maisonaurelia.luxury</div>
+            </div>
+            <div style="padding:0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:#fff;">
+              <strong style="color:var(--text-primary);display:block;">Billing, Diplomatic &amp; Events</strong>
+              <span style="color:var(--text-muted);font-size:0.78rem;">Folios, wire transfers &amp; private wing buyouts</span>
+              <div style="margin-top:0.35rem;font-weight:700;color:var(--gold-primary);">+41 22 819 0099</div>
+              <div style="font-size:0.76rem;color:var(--text-muted);">finance@maisonaurelia.luxury</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT COLUMN: Contact Page Message Form -> Routes Directly to Admin Inbox -->
+      <div style="display:flex;flex-direction:column;gap:1.5rem;">
+        <div class="price-summary-card" style="position:static;background:#ffffff;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.4rem;">
+            <span class="section-eyebrow" style="margin-bottom:0;">DIRECT TO ADMIN MESSAGING INBOX</span>
+            <span class="status-pill confirmed" style="font-size:0.72rem;">Live Admin Inbox Routing</span>
+          </div>
+          <h3 style="font-family:var(--font-serif);font-size:1.55rem;margin-bottom:0.35rem;">Send a Message to Admin &amp; Concierge</h3>
+          <p style="font-size:0.84rem;color:var(--text-muted);margin-bottom:1rem;">
+            Messages sent from this Contact Page create an instant conversation thread in the <strong>Admin Messaging Inbox</strong> (`#view-admin` &rarr; Tab 7) and in your <strong>Guest Messaging Inbox</strong> so Admin can reply directly to you.
+          </p>
+
+          <!-- 1-Click Quick Inquiry Topic Chips -->
+          <div style="margin-bottom:0.9rem;">
+            <span style="font-size:0.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:0.35rem;">Quick Inquiry Presets:</span>
+            <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+              <button type="button" class="nearby-date-btn" style="font-size:0.74rem;" onclick="window.AureliaApp.fillContactPreset('airport')">✈ Rolls-Royce Airport Transfer</button>
+              <button type="button" class="nearby-date-btn" style="font-size:0.74rem;" onclick="window.AureliaApp.fillContactPreset('viewing')">🏰 Private Suite Viewing</button>
+              <button type="button" class="nearby-date-btn" style="font-size:0.74rem;" onclick="window.AureliaApp.fillContactPreset('dining')">🍽️ 2★ Michelin Chef's Table</button>
+              <button type="button" class="nearby-date-btn" style="font-size:0.74rem;" onclick="window.AureliaApp.fillContactPreset('helipad')">🚁 Helipad H1 Landing Clearance</button>
+            </div>
+          </div>
+
+          <form id="contactPageMessageForm" onsubmit="window.AureliaApp.handleContactPageSubmit(event)">
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="contactGuestName">Your Full Name *</label>
+                <input type="text" id="contactGuestName" placeholder="e.g. Elena Rostova" required />
+              </div>
+              <div class="form-group">
+                <label for="contactGuestEmail">Your Email Address *</label>
+                <input type="email" id="contactGuestEmail" placeholder="elena.rostova@example.com" required />
+              </div>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="contactGuestPhone">Phone / WhatsApp (Optional)</label>
+                <input type="tel" id="contactGuestPhone" placeholder="+41 79 555 0192" />
+              </div>
+              <div class="form-group">
+                <label for="contactBookingRef">Booking Reference (Optional)</label>
+                <input type="text" id="contactBookingRef" placeholder="e.g. AUR-VIP001" />
+              </div>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="contactDepartment">Recipient Admin Department</label>
+                <select id="contactDepartment">
+                  <option value="Head Concierge & Admin">Head Concierge &amp; Admin</option>
+                  <option value="Private Aviation & Chauffeur">Private Aviation &amp; Chauffeur</option>
+                  <option value="Front Desk & Reception">Front Desk &amp; Reception</option>
+                  <option value="Dining & Thermal Sanctuary">2★ Michelin Dining &amp; Spa</option>
+                  <option value="Billing & Finance">Billing &amp; Finance</option>
+                  <option value="Executive Management">Executive Management</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="contactPriority">Inquiry Priority</label>
+                <select id="contactPriority">
+                  <option value="normal">Normal Inquiry</option>
+                  <option value="vip_urgent">VIP Urgent / Immediate Arrival</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="contactMapPoint">Selected Map Landmark / Arrival Point (Optional)</label>
+              <input type="text" id="contactMapPoint" value="Maison Aurélia Grand Palace (46.2085° N, 6.1496° E)" />
+            </div>
+
+            <div class="form-group">
+              <label for="contactSubject">Subject *</label>
+              <input type="text" id="contactSubject" placeholder="e.g. Chauffeur Pickup & Early Suite Check-In Inquiry" required />
+            </div>
+
+            <div class="form-group">
+              <label for="contactMessageBody">Message to Admin &amp; Concierge *</label>
+              <textarea id="contactMessageBody" rows="4" placeholder="Write your inquiry or special request here. It will appear immediately in the Admin Messaging Inbox..." required></textarea>
+            </div>
+
+            <button type="submit" class="btn-primary" style="width:100%;">
+              💬 Send Message to Admin Inbox
+            </button>
+          </form>
+
+          <!-- Instant Submission Confirmation & 1-Click Jump to Admin Inbox -->
+          <div id="contactSubmissionResultBox" class="hidden" style="margin-top:1rem;"></div>
+        </div>
+
+        <!-- Check Admin Replies & Continue Conversation Right on the Contact Page -->
+        <div class="price-summary-card" style="position:static;">
+          <span class="section-eyebrow">TRACK &amp; REPLY TO YOUR CONTACT THREAD</span>
+          <h3 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.35rem;">Check Admin Reply by Reference</h3>
+          <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.85rem;">
+            Already sent a message? Enter your Thread Reference (e.g. <code>MSG-VIP001</code>) and email to read Admin's reply and respond.
+          </p>
+          <form onsubmit="window.AureliaApp.handleContactThreadLookup(event)" class="form-grid-2" style="align-items:end;">
+            <div class="form-group" style="margin-bottom:0;">
+              <label for="contactLookupRef">Thread Reference</label>
+              <input type="text" id="contactLookupRef" placeholder="MSG-VIP001" value="MSG-VIP001" required />
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label for="contactLookupEmail">Email Address</label>
+              <input type="email" id="contactLookupEmail" placeholder="elena.rostova@example.com" value="elena.rostova@example.com" required />
+            </div>
+            <div style="grid-column:1 / -1;margin-top:0.4rem;">
+              <button type="submit" class="btn-secondary" style="width:100%;">Check Conversation &amp; Admin Replies</button>
+            </div>
+          </form>
+          <div id="contactThreadLookupResult" style="margin-top:1rem;"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- VIEW 2B: VERIFIED CUSTOMER REVIEWS & GUEST TESTIMONIALS PAGE          -->
+  <!-- ===================================================================== -->
+  <section id="view-reviews" class="container hidden" style="padding-top:2.5rem;padding-bottom:4rem;">
+    <div class="section-header" style="margin-top:0;display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:1rem;">
+      <div>
+        <span class="section-eyebrow">VERIFIED GUEST IMPRESSIONS • FIVE-STAR PALACE BENCHMARK</span>
+        <h2 class="section-title" style="margin-bottom:0.35rem;">Customer Reviews &amp; Verified Stay Testimonials</h2>
+        <p style="color:var(--text-muted);font-size:0.95rem;max-width:780px;">
+          Read authentic stay reviews from our guests across all 10 residence categories, inspect official Palace Director responses, or share your own Maison Aurélia experience.
+        </p>
+      </div>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <button type="button" class="btn-primary" style="padding:0.55rem 1.1rem;font-size:0.82rem;" onclick="document.getElementById('writeCustomerReviewCard').scrollIntoView({ behavior: 'smooth' })">
+          ✍️ Write a Customer Review
+        </button>
+        <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.switchView('home')">
+          Explore Suites &amp; Rooms &rarr;
+        </button>
+      </div>
+    </div>
+
+    <!-- Aggregate Rating Summary & Hospitality Pillar Scores Banner -->
+    <div id="reviewsSummaryBanner" class="price-summary-card" style="position:static;background:var(--bg-obsidian);color:var(--text-light);margin-bottom:1.5rem;">
+      <!-- Rendered dynamically by window.AureliaApp.renderReviewsPage() -->
+    </div>
+
+    <!-- Interactive Filter, Suite Selector & Search Bar -->
+    <div class="price-summary-card" style="position:static;background:#ffffff;margin-bottom:1.75rem;padding:1.1rem 1.35rem;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:0.75rem;align-items:end;">
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterRating">Star Rating</label>
+          <select id="reviewFilterRating" onchange="window.AureliaApp.filterCustomerReviews()">
+            <option value="all">All Star Ratings</option>
+            <option value="5">★★★★★ Only (5 Stars)</option>
+            <option value="4">★★★★☆ &amp; Above (4+ Stars)</option>
+            <option value="3">★★★☆☆ &amp; Above (3+ Stars)</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterRoom">Suite / Room Residence</label>
+          <select id="reviewFilterRoom" onchange="window.AureliaApp.filterCustomerReviews()">
+            <option value="all">All Suites &amp; Rooms</option>
+            <option value="701">#701 • Imperial Presidential Suite</option>
+            <option value="PH-01">#PH-01 • Sky Crown Duplex Penthouse</option>
+            <option value="501">#501 • Grand Aurélia Salon Suite</option>
+            <option value="401">#401 • Family Interconnecting Wing</option>
+            <option value="201">#201 • Lakefront Panorama Deluxe</option>
+            <option value="105">#105 • Barrier-Free Sanctuary Suite</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterStayType">Stay Occasion</label>
+          <select id="reviewFilterStayType" onchange="window.AureliaApp.filterCustomerReviews()">
+            <option value="all">All Stay Occasions</option>
+            <option value="VIP Diplomatic & Executive">VIP Diplomatic &amp; Executive</option>
+            <option value="Honeymoon & Anniversary">Honeymoon &amp; Anniversary</option>
+            <option value="Gastronomy & Wellness">Gastronomy &amp; Wellness</option>
+            <option value="Couple & Leisure">Couple &amp; Leisure</option>
+            <option value="Family Sanctuary">Family Sanctuary</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterSort">Sort Reviews By</label>
+          <select id="reviewFilterSort" onchange="window.AureliaApp.filterCustomerReviews()">
+            <option value="newest">Most Recent First</option>
+            <option value="helpful">Most Helpful First</option>
+            <option value="highest">Highest Rated First</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterSearch">Search Keyword / Guest</label>
+          <input type="text" id="reviewFilterSearch" placeholder="Search e.g. Helipad, Spa, #701..." oninput="window.AureliaApp.filterCustomerReviews()" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Main 2-Column Customer Reviews Feed + Write Review Form -->
+    <div class="checkout-columns" style="align-items:start;">
+      <!-- LEFT COLUMN: Customer Reviews Feed -->
+      <div>
+        <div id="customerReviewsListContainer" style="display:flex;flex-direction:column;gap:1.15rem;">
+          <!-- Populated dynamically by window.AureliaApp -->
+        </div>
+      </div>
+
+      <!-- RIGHT COLUMN: Submit a Customer Review Card -->
+      <div id="writeCustomerReviewCard" class="price-summary-card" style="position:static;background:#ffffff;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.4rem;margin-bottom:0.35rem;">
+          <span class="section-eyebrow" style="margin-bottom:0;">SHARE YOUR PALACE IMPRESSION</span>
+          <span class="status-pill confirmed" style="font-size:0.72rem;">Instant Live Publication</span>
+        </div>
+        <h3 style="font-family:var(--font-serif);font-size:1.5rem;margin-bottom:0.35rem;">Write a Customer Review</h3>
+        <p style="font-size:0.83rem;color:var(--text-muted);margin-bottom:0.9rem;">
+          Stayed with us at Maison Aurélia or dined at Le Jardin d’Or? Share your review below. Enter your Booking Reference if you wish to attach a <strong>Verified Stay Badge</strong>.
+        </p>
+
+        <!-- 1-Click Quick Review Presets for Testing -->
+        <div style="margin-bottom:0.9rem;">
+          <span style="font-size:0.74rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:0.35rem;">Quick Review Presets:</span>
+          <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+            <button type="button" class="nearby-date-btn" style="font-size:0.73rem;" onclick="window.AureliaApp.fillCustomerReviewPreset('presidential')">★ #701 Presidential &amp; Helipad</button>
+            <button type="button" class="nearby-date-btn" style="font-size:0.73rem;" onclick="window.AureliaApp.fillCustomerReviewPreset('penthouse')">★ #PH-01 Sky Penthouse Pool</button>
+            <button type="button" class="nearby-date-btn" style="font-size:0.73rem;" onclick="window.AureliaApp.fillCustomerReviewPreset('spa')">★ Michelin &amp; Thermal Spa</button>
+          </div>
+        </div>
+
+        <form id="customerReviewPageForm" onsubmit="window.AureliaApp.handleCustomerReviewPageSubmit(event)">
+          <!-- Interactive Star Rating Selector -->
+          <div class="form-group">
+            <label>Overall Rating *</label>
+            <input type="hidden" id="reviewFormRating" value="5" />
+            <div id="reviewStarPickerRow" style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="5" onclick="window.AureliaApp.setCustomerReviewRating(5)" style="background:rgba(212,175,99,0.2);border-color:var(--gold-primary);color:#92400e;font-weight:700;">★★★★★ (5/5 Peerless)</button>
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="4" onclick="window.AureliaApp.setCustomerReviewRating(4)">★★★★☆ (4/5)</button>
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="3" onclick="window.AureliaApp.setCustomerReviewRating(3)">★★★☆☆ (3/5)</button>
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="2" onclick="window.AureliaApp.setCustomerReviewRating(2)">★★☆☆☆ (2/5)</button>
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="1" onclick="window.AureliaApp.setCustomerReviewRating(1)">★☆☆☆☆ (1/5)</button>
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="reviewGuestName">Your Full Name *</label>
+              <input type="text" id="reviewGuestName" placeholder="e.g. Elena Rostova" required />
+            </div>
+            <div class="form-group">
+              <label for="reviewGuestCountry">Country / Residence</label>
+              <input type="text" id="reviewGuestCountry" placeholder="e.g. Switzerland" value="Switzerland" />
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="reviewGuestEmail">Email Address (Optional)</label>
+              <input type="email" id="reviewGuestEmail" placeholder="guest@example.com" />
+            </div>
+            <div class="form-group">
+              <label for="reviewBookingRef">Booking Reference (Optional)</label>
+              <input type="text" id="reviewBookingRef" placeholder="e.g. AUR-2026-XXXXXX" />
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="reviewRoomNumber">Suite / Room Stayed In</label>
+              <select id="reviewRoomNumber">
+                <option value="701">#701 • The Imperial Presidential Residence</option>
+                <option value="PH-01">#PH-01 • Sky Crown Duplex Penthouse</option>
+                <option value="501">#501 • Grand Aurélia Salon Suite</option>
+                <option value="305">#305 • Junior Atelier Corner Suite</option>
+                <option value="301">#301 • Executive Club Lake Chamber</option>
+                <option value="401">#401 • Family Interconnecting Residence</option>
+                <option value="205">#205 • Superior Botanical Terrace</option>
+                <option value="201">#201 • Lakefront Panorama Deluxe</option>
+                <option value="105">#105 • Universal Barrier-Free Suite</option>
+                <option value="101">#101 • Classic Courtyard Queen</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="reviewStayType">Stay Occasion</label>
+              <select id="reviewStayType">
+                <option value="Couple & Leisure">Couple &amp; Leisure</option>
+                <option value="VIP Diplomatic & Executive">VIP Diplomatic &amp; Executive</option>
+                <option value="Honeymoon & Anniversary">Honeymoon &amp; Anniversary</option>
+                <option value="Gastronomy & Wellness">Gastronomy &amp; Wellness</option>
+                <option value="Family Sanctuary">Family Sanctuary</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="reviewTitle">Review Headline / Title *</label>
+            <input type="text" id="reviewTitle" placeholder="Summarize your stay at Maison Aurélia..." required />
+          </div>
+
+          <div class="form-group">
+            <label for="reviewComment">Detailed Review &amp; Highlights *</label>
+            <textarea id="reviewComment" rows="4" placeholder="Share your impressions of your suite, butler service, Michelin dining, or thermal sanctuary..." required></textarea>
+          </div>
+
+          <button type="submit" class="btn-primary" style="width:100%;">
+            ⭐ Publish Customer Review
+          </button>
+        </form>
+
+        <div id="reviewSubmissionResultBox" class="hidden" style="margin-top:0.95rem;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- VIEW 2: GUEST BOOKING LOOKUP, INVOICE & SELF-SERVICE CANCELLATION     -->
+  <!-- ===================================================================== -->
+  <section id="view-lookup" class="container hidden" style="padding-top:2.5rem;padding-bottom:4rem;">
+    <div class="section-header" style="margin-top:0;">
+      <span class="section-eyebrow">RESERVATION RETRIEVAL &amp; SELF-SERVICE</span>
+      <h2 class="section-title">Manage Your Reservation &amp; Download Invoice</h2>
+      <p style="color:var(--text-muted);font-size:0.95rem;">
+        Enter your unique Booking Reference (e.g. <code>AUR-2026-...</code>) and the email address used during checkout.
+      </p>
+    </div>
+
+    <div style="max-width:680px;margin:0 auto 2rem;" class="price-summary-card">
+      <form onsubmit="window.AureliaApp.handleLookupSubmit(event)" class="form-grid-2" style="align-items:end;">
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="lookupRefInput">Booking Reference</label>
+          <input type="text" id="lookupRefInput" placeholder="AUR-2026-XXXXXX" required />
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="lookupEmailInput">Guest Email Address</label>
+          <input type="email" id="lookupEmailInput" placeholder="guest@example.com" required />
+        </div>
+        <div style="grid-column:1 / -1;margin-top:0.5rem;">
+          <button type="submit" class="btn-primary" style="width:100%;">Retrieve Reservation &amp; Invoice</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="lookupResultContainer" style="max-width:920px;margin:0 auto;"></div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- VIEW 3: GUEST PRIVÉ ACCOUNT PORTAL & NOTIFICATION INBOX               -->
+  <!-- ===================================================================== -->
+  <section id="view-portal" class="container hidden" style="padding-top:2.5rem;padding-bottom:4rem;">
+    <div class="section-header" style="margin-top:0;">
+      <span class="section-eyebrow">AURÉLIA PRIVÉ MEMBERSHIP</span>
+      <h2 class="section-title">Guest Account, Booking History &amp; Notifications</h2>
+    </div>
+
+    <div id="portalGuestAuthBox" class="checkout-columns" style="max-width:960px;margin:0 auto;">
+      <!-- Sign In Card -->
+      <div class="price-summary-card" style="position:static;">
+        <h3 style="font-family:var(--font-serif);font-size:1.5rem;margin-bottom:0.75rem;">Sign In to Your Account</h3>
+        <p style="font-size:0.84rem;color:var(--text-muted);margin-bottom:1rem;">
+          Access your upcoming stays, past invoices, and concierge notifications.
+        </p>
+        <form onsubmit="window.AureliaApp.handleLoginSubmit(event)">
+          <div class="form-group">
+            <label for="loginEmail">Email Address</label>
+            <input type="email" id="loginEmail" value="elena.rostova@example.com" required />
+          </div>
+          <div class="form-group">
+            <label for="loginPassword">Password</label>
+            <input type="password" id="loginPassword" value="GuestPass!2026" required />
+          </div>
+          <button type="submit" class="btn-primary" style="width:100%;">Sign In</button>
+        </form>
+        <div style="margin-top:1rem;padding-top:0.75rem;border-top:1px dashed var(--border-subtle);font-size:0.78rem;color:var(--text-muted);">
+          <strong>One-Click Demo Account Sign-In:</strong>
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.45rem;">
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.quickGuestLogin('elena.rostova@example.com', 'GuestPass!2026')">VIP Guest (Elena Rostova)</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.quickGuestLogin('admin@maisonaurelia.luxury', 'AureliaAdmin!2026')">Hotel Admin (Henri de Valois)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Create Guest Account Card -->
+      <div class="price-summary-card" style="position:static;background:#ffffff;">
+        <h3 style="font-family:var(--font-serif);font-size:1.5rem;margin-bottom:0.75rem;">Enroll in Aurélia Privé</h3>
+        <form onsubmit="window.AureliaApp.handleRegisterSubmit(event)">
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="regFirstName">First Name</label>
+              <input type="text" id="regFirstName" required />
+            </div>
+            <div class="form-group">
+              <label for="regLastName">Last Name</label>
+              <input type="text" id="regLastName" required />
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="regEmail">Email Address</label>
+            <input type="email" id="regEmail" required />
+          </div>
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="regPhone">Phone Number</label>
+              <input type="tel" id="regPhone" placeholder="+41 22 000 0000" />
+            </div>
+            <div class="form-group">
+              <label for="regCountry">Country / Residence</label>
+              <input type="text" id="regCountry" placeholder="Switzerland" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="regPassword">Create Password (min. 8 chars)</label>
+            <input type="password" id="regPassword" minlength="8" required />
+          </div>
+          <button type="submit" class="btn-secondary" style="width:100%;">Create Guest Account (+1,000 Loyalty Points)</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Authenticated Multi-Tab User & Guest Privé Dashboard -->
+    <div id="portalAuthenticatedDashboard" class="hidden">
+      <div class="admin-shell">
+        <div class="admin-topbar">
+          <div>
+            <span class="staging-badge" id="guestLoyaltyBadge">Imperial Black</span>
+            <h3 id="guestWelcomeName" style="font-family:var(--font-serif);font-size:1.45rem;display:inline-block;vertical-align:middle;margin-left:0.4rem;"></h3>
+            <p id="guestLoyaltyPoints" style="color:var(--gold-bright);font-size:0.85rem;margin-top:0.2rem;"></p>
+          </div>
+          <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+            <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('home')">+ Book New Suite</button>
+            <button type="button" class="btn-secondary" style="color:#fff;border-color:rgba(255,255,255,0.4);padding:0.4rem 0.9rem;font-size:0.8rem;" onclick="window.AureliaApp.logout()">Sign Out</button>
+          </div>
+        </div>
+
+        <div class="admin-tabs" role="tablist">
+          <button type="button" class="admin-tab-btn guest-tab-btn active" onclick="window.AureliaApp.switchGuestTab('overview', this)">1. Loyalty Wallet &amp; Stay KPIs</button>
+          <button type="button" class="admin-tab-btn guest-tab-btn" onclick="window.AureliaApp.switchGuestTab('bookings', this)">2. My Reservations, Keys &amp; Invoices</button>
+          <button type="button" class="admin-tab-btn guest-tab-btn" onclick="window.AureliaApp.switchGuestTab('messages', this)">3. 💬 Direct Messaging Inbox</button>
+          <button type="button" class="admin-tab-btn guest-tab-btn" onclick="window.AureliaApp.switchGuestTab('concierge', this)">4. VIP Concierge Service Desk</button>
+          <button type="button" class="admin-tab-btn guest-tab-btn" onclick="window.AureliaApp.switchGuestTab('waitlist', this)">5. Priority Waitlist &amp; Alerts</button>
+          <button type="button" class="admin-tab-btn guest-tab-btn" onclick="window.AureliaApp.switchGuestTab('profile', this)">6. Profile, Security &amp; Notifications</button>
+        </div>
+
+        <div id="guestPortalTabContent" class="admin-content">
+          <!-- Rendered dynamically by window.AureliaApp -->
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- VIEW 4: HOTEL ADMINISTRATION DASHBOARD (RBAC PROTECTED)               -->
+  <!-- ===================================================================== -->
+  <section id="view-admin" class="container hidden" style="padding-top:1.5rem;padding-bottom:4rem;">
+    <div class="admin-shell">
+      <div class="admin-topbar">
+        <div>
+          <span class="staging-badge">ROLE-BASED STAFF CONSOLE</span>
+          <h2 style="font-family:var(--font-serif);font-size:1.65rem;display:inline-block;vertical-align:middle;">
+            Maison Aurélia Administration &amp; Inventory Engine
+          </h2>
+          <p id="adminCurrentRoleDisplay" style="font-size:0.8rem;color:#cbd5e1;margin-top:0.25rem;"></p>
+        </div>
+
+        <!-- One-Click RBAC Staff Role Switcher for Testing & Operations -->
+        <div style="display:flex;gap:0.45rem;flex-wrap:wrap;align-items:center;">
+          <span style="font-size:0.75rem;color:var(--gold-bright);font-weight:700;">Switch Staff Role:</span>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.quickStaffLogin('admin@maisonaurelia.luxury', 'AureliaAdmin!2026')">Admin (Full)</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.quickStaffLogin('manager@maisonaurelia.luxury', 'AureliaManager!2026')">Manager</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.quickStaffLogin('frontdesk@maisonaurelia.luxury', 'AureliaDesk!2026')">Receptionist</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.quickStaffLogin('finance@maisonaurelia.luxury', 'AureliaFinance!2026')">Finance</button>
+        </div>
+      </div>
+
+      <div class="admin-tabs" role="tablist">
+        <button type="button" class="admin-tab-btn active" onclick="window.AureliaApp.switchAdminTab('overview', this)">1. Executive KPIs &amp; Arrivals</button>
+        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('reservations', this)">2. Reservations &amp; Walk-In Desk</button>
+        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('rooms', this)">3. Rooms &amp; Categories CRUD</button>
+        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('calendar', this)">4. Calendar &amp; Maintenance Blocks</button>
+        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('settings', this)">5. Rates, Promos, Taxes &amp; Policies</button>
+        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('users', this)">6. Users, Staff &amp; Concierge Desk</button>
+        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('messages', this)">7. 💬 Guest Messaging Inbox</button>
+        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('audit', this)">8. Audit Trail, Templates &amp; Backups</button>
+      </div>
+
+      <div id="adminTabContent" class="admin-content">
+        <!-- Rendered dynamically by window.AureliaApp -->
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 1: ROOM PHOTO GALLERY, SPECIFICATIONS & POLICIES                -->
+  <!-- ===================================================================== -->
+  <div id="roomDetailModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="roomModalTitle">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <div>
+          <span id="roomModalCategory" class="staging-badge"></span>
+          <h3 id="roomModalTitle" style="font-family:var(--font-serif);font-size:1.55rem;display:inline;"></h3>
+        </div>
+        <button type="button" class="modal-close" aria-label="Close modal" onclick="window.AureliaApp.closeRoomDetailModal()">&times;</button>
+      </div>
+      <div id="roomModalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 2: ATOMIC CHECKOUT, HOLD TIMER & SECURE PAYMENT GATEWAY         -->
+  <!-- ===================================================================== -->
+  <div id="checkoutModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="checkoutModalTitle">
+    <div class="modal-panel" style="max-width:1080px;">
+      <div class="modal-header">
+        <div>
+          <span class="staging-badge">STEP 5–8 • ATOMIC INVENTORY HOLD &amp; VERIFIED CHECKOUT</span>
+          <h3 id="checkoutModalTitle" style="font-family:var(--font-serif);font-size:1.5rem;display:inline;">Complete Your Luxury Reservation</h3>
+        </div>
+        <button type="button" class="modal-close" aria-label="Minimize checkout" onclick="window.AureliaApp.closeCheckoutModal()">&times;</button>
+      </div>
+      <div id="checkoutModalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 3: INSTANT CONFIRMATION & OFFICIAL PRINTABLE INVOICE            -->
+  <!-- ===================================================================== -->
+  <div id="confirmationModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirmationModalTitle">
+    <div class="modal-panel" style="max-width:860px;">
+      <div class="modal-header no-print">
+        <div>
+          <span class="staging-badge" style="background:rgba(23,107,71,0.4);color:#86efac;border-color:#86efac;">RESERVATION CONFIRMED</span>
+          <h3 id="confirmationModalTitle" style="font-family:var(--font-serif);font-size:1.5rem;display:inline;">Official Confirmation &amp; Tax Invoice</h3>
+        </div>
+        <button type="button" class="modal-close" aria-label="Close confirmation" onclick="window.AureliaApp.closeConfirmationModal()">&times;</button>
+      </div>
+      <div id="confirmationModalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Luxury Footer -->
+  <footer class="site-footer">
+    <div class="footer-grid">
+      <div>
+        <div class="brand-logo" style="margin-bottom:0.85rem;">
+          <div class="brand-crest">MA</div>
+          <div>
+            <span class="brand-title">Maison Aurélia</span>
+            <span class="brand-sub">Grand Palace &amp; Sanctuary</span>
+          </div>
+        </div>
+        <p style="font-size:0.84rem;color:#94a3b8;margin-bottom:1rem;">
+          18 Quai du Mont-Blanc, Waterfront Sanctuary Quarter.<br />
+          Member of The Leading Palace Hotels of the World.
+        </p>
+        <p style="font-size:0.78rem;color:var(--gold-bright);">
+          24/7 Reservations &amp; Private Aviation Desk: +41 22 819 0000
+        </p>
+      </div>
+
+      <div>
+        <h4 class="footer-heading">Suite &amp; Room Categories</h4>
+        <ul style="list-style:none;font-size:0.84rem;line-height:1.9;color:#cbd5e1;">
+          <li>Standard &amp; Deluxe Courtyard Rooms</li>
+          <li>Superior &amp; Executive Club Chambers</li>
+          <li>Junior Atelier &amp; Grand Luxury Suites</li>
+          <li>Interconnecting Family Residences</li>
+          <li>Universal Barrier-Free Accessible Suites</li>
+          <li>Imperial Presidential &amp; Sky Penthouse</li>
+        </ul>
+      </div>
+
+      <div>
+        <h4 class="footer-heading">Direct Booking Guarantees</h4>
+        <ul style="list-style:none;font-size:0.84rem;line-height:1.9;color:#cbd5e1;">
+          <li>✓ Real-Time Database Availability Engine</li>
+          <li>✓ Zero Double-Booking Exclusion Guarantee</li>
+          <li>✓ 10-Minute Expiring Checkout Holds</li>
+          <li>✓ Tokenised PCI-Safe Payment Processing</li>
+          <li>✓ Instant Booking Reference &amp; Tax Invoice</li>
+          <li>✓ Complimentary Welcome Champagne</li>
+        </ul>
+      </div>
+
+      <div>
+        <h4 class="footer-heading">Quick Portal Links</h4>
+        <div style="display:flex;flex-direction:column;gap:0.5rem;align-items:flex-start;">
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('home')">Explore Room Catalogue</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('reviews')">⭐ Customer Reviews &amp; Testimonials</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('contact')">📍 Contact Page &amp; Interactive Map</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('lookup')">Retrieve Booking / Cancel Stay</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('portal')">Guest Privé Account &amp; Loyalty</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('admin')">Hotel Staff Administration Console</button>
+        </div>
+      </div>
+    </div>
+    <div style="max-width:1380px;margin:2.5rem auto 0;padding-top:1.5rem;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:space-between;flex-wrap:wrap;font-size:0.78rem;color:#64748b;">
+      <span>&copy; 2026 Maison Aurélia Grand Palace &amp; Sanctuary. All rights reserved.</span>
+      <span>Timezone: Hotel Local Time (Check-in 15:00 • Check-out 12:00)</span>
+    </div>
+  </footer>
+
+  <script src="/js/i18n.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

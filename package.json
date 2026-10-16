@@ -1,0 +1,27 @@
+{
+  "name": "maison-aurelia-luxury-hotel",
+  "version": "1.0.0",
+  "description": "Maison Aurélia Grand Palace & Suites — Luxury Hotel Website & Online Room Reservation Platform",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "dev": "node --no-warnings src/server.js",
+    "test": "node --no-warnings --test tests/hotel.test.js",
+    "build": "node --no-warnings src/scripts/verify-build.js",
+    "backup": "node --no-warnings src/scripts/backup-db.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/subwindels-hash/Luxury-Hotel-Website.git"
+  },
+  "keywords": [
+    "luxury-hotel",
+    "reservation-system",
+    "booking-engine",
+    "hospitality"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
