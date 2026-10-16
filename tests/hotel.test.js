@@ -1421,4 +1421,57 @@ describe('Maison Aurélia Luxury Hotel & Online Reservation Platform — End-to-
     assert.equal(followUp.data.thread.unread_by_admin, 1);
     assert.equal(followUp.data.thread.messages.length, 3);
   });
+
+  it('23. Serves Customer Reviews Page with aggregate summary, multi-filter search, new review submission, helpful voting, and Admin responses', async () => {
+    const adminLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'admin@maisonaurelia.luxury',
+      password: 'AureliaAdmin!2026'
+    });
+    const adminToken = adminLogin.data.token;
+
+    // 1. Fetch initial customer reviews & aggregate summary
+    const initRev = await reqJson('GET', '/api/reviews');
+    assert.equal(initRev.status, 200);
+    assert.ok(Array.isArray(initRev.data.reviews));
+    assert.ok(initRev.data.reviews.length >= 6);
+    assert.ok(initRev.data.summary.totalReviews >= 6);
+    assert.ok(initRev.data.summary.averageRating >= 4.5);
+
+    // 2. Submit a new Customer Review from the Customer Reviews Page
+    const postRev = await reqJson('POST', '/api/reviews', {
+      guestName: 'Duchess Victoria Ashworth',
+      guestEmail: 'victoria@ashworth.uk',
+      guestCountry: 'United Kingdom',
+      roomNumber: '701',
+      categoryName: 'Presidential Suite',
+      stayType: 'VIP Diplomatic & Executive',
+      rating: 5,
+      title: 'Sublime Lake Geneva Panorama & Impeccable Butler Service',
+      comment: 'Suite #701 and the private Rolls-Royce airport transfer made our diplomatic visit effortless.'
+    });
+    assert.equal(postRev.status, 201);
+    assert.equal(postRev.data.review.rating, 5);
+    assert.equal(postRev.data.review.room_number, '701');
+    const newRevId = postRev.data.review.id;
+
+    // 3. Vote the review as helpful
+    const voteRes = await reqJson('POST', `/api/reviews/${newRevId}/helpful`, {});
+    assert.equal(voteRes.status, 200);
+    assert.equal(voteRes.data.review.helpful_count, 1);
+
+    // 4. Admin posts an official Palace Management response to the customer review
+    const replyRes = await reqJson(
+      'POST',
+      `/api/admin/reviews/${newRevId}/reply`,
+      { responseText: 'Dear Duchess Ashworth, we are honoured by your 5-star endorsement of Suite #701.' },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(replyRes.status, 200);
+    assert.ok(replyRes.data.review.admin_response.includes('Duchess Ashworth'));
+
+    // 5. Filter customer reviews by roomNumber=701 & rating=5
+    const filtered = await reqJson('GET', '/api/reviews?roomNumber=701&rating=5');
+    assert.equal(filtered.status, 200);
+    assert.ok(filtered.data.reviews.some((r) => r.id === newRevId));
+  });
 });

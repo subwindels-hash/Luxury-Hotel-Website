@@ -428,14 +428,23 @@ function createSchema(db) {
 
     CREATE TABLE IF NOT EXISTS guest_reviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      reservation_id INTEGER NOT NULL UNIQUE REFERENCES reservations(id) ON DELETE CASCADE,
-      booking_reference TEXT NOT NULL,
+      reservation_id INTEGER UNIQUE REFERENCES reservations(id) ON DELETE CASCADE,
+      booking_reference TEXT NOT NULL DEFAULT 'AUR-VERIFIED',
       room_id INTEGER REFERENCES rooms(id) ON DELETE SET NULL,
-      room_number TEXT NOT NULL,
+      room_number TEXT NOT NULL DEFAULT 'Suite',
+      category_name TEXT NOT NULL DEFAULT 'Palace Suite',
       guest_name TEXT NOT NULL,
+      guest_email TEXT DEFAULT '',
+      guest_country TEXT NOT NULL DEFAULT 'Switzerland',
+      stay_type TEXT NOT NULL DEFAULT 'Couple & Leisure',
       rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
       title TEXT NOT NULL,
       comment TEXT NOT NULL,
+      verified_stay INTEGER NOT NULL DEFAULT 1,
+      helpful_count INTEGER NOT NULL DEFAULT 0,
+      admin_response TEXT DEFAULT '',
+      admin_responder_name TEXT DEFAULT '',
+      admin_responded_at TEXT DEFAULT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -687,6 +696,37 @@ function createSchema(db) {
     if (!resCols.some((c) => c.name === 'loyalty_points_redeemed')) {
       db.exec('ALTER TABLE reservations ADD COLUMN loyalty_points_redeemed INTEGER NOT NULL DEFAULT 0;');
       db.exec('ALTER TABLE reservations ADD COLUMN loyalty_discount_amount REAL NOT NULL DEFAULT 0;');
+    }
+    const revCols = db.prepare("PRAGMA table_info('guest_reviews')").all();
+    const resIdCol = revCols.find((c) => c.name === 'reservation_id');
+    if ((resIdCol && resIdCol.notnull === 1) || !revCols.some((c) => c.name === 'guest_country')) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS guest_reviews_v2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          reservation_id INTEGER UNIQUE REFERENCES reservations(id) ON DELETE CASCADE,
+          booking_reference TEXT NOT NULL DEFAULT 'AUR-VERIFIED',
+          room_id INTEGER REFERENCES rooms(id) ON DELETE SET NULL,
+          room_number TEXT NOT NULL DEFAULT 'Suite',
+          category_name TEXT NOT NULL DEFAULT 'Palace Suite',
+          guest_name TEXT NOT NULL,
+          guest_email TEXT DEFAULT '',
+          guest_country TEXT NOT NULL DEFAULT 'Switzerland',
+          stay_type TEXT NOT NULL DEFAULT 'Couple & Leisure',
+          rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+          title TEXT NOT NULL,
+          comment TEXT NOT NULL,
+          verified_stay INTEGER NOT NULL DEFAULT 1,
+          helpful_count INTEGER NOT NULL DEFAULT 0,
+          admin_response TEXT DEFAULT '',
+          admin_responder_name TEXT DEFAULT '',
+          admin_responded_at TEXT DEFAULT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO guest_reviews_v2 (id, reservation_id, booking_reference, room_id, room_number, guest_name, rating, title, comment, created_at)
+        SELECT id, reservation_id, booking_reference, room_id, room_number, guest_name, rating, title, comment, created_at FROM guest_reviews;
+        DROP TABLE guest_reviews;
+        ALTER TABLE guest_reviews_v2 RENAME TO guest_reviews;
+      `);
     }
   } catch (_) {}
 }

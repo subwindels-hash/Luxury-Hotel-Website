@@ -1,11 +1,164 @@
 const { getDb, withImmediateTransaction } = require('./database');
 const { hashPassword } = require('../middleware/auth');
 
+function seedInitialCustomerReviews(db) {
+  try {
+    const revCount = db.prepare('SELECT COUNT(*) AS cnt FROM guest_reviews').get();
+    if (revCount && revCount.cnt > 0) return;
+
+    const getRoomId = (num) => {
+      const r = db.prepare('SELECT id FROM rooms WHERE room_number = ?').get(num);
+      return r ? r.id : null;
+    };
+
+    const seedReviews = [
+      {
+        booking_reference: 'AUR-2026-PRES01',
+        room_id: getRoomId('701'),
+        room_number: '701',
+        category_name: 'Presidential Suite',
+        guest_name: 'Elena Rostova',
+        guest_email: 'elena.rostova@example.com',
+        guest_country: 'Switzerland',
+        stay_type: 'VIP Diplomatic & Executive',
+        rating: 5,
+        title: 'An Unrivalled Masterpiece of European Palace Hospitality',
+        comment: 'From the moment our helicopter touched down on Helipad H1 to the chilled Krug Grande Cuvée waiting in The Imperial Presidential Residence (#701), every detail was executed with surgical perfection. The private Calacatta marble sauna and 270° Lake Geneva terrace are extraordinary.',
+        verified_stay: 1,
+        helpful_count: 24,
+        admin_response: 'Dear Madame Rostova, it is always our highest privilege to welcome you back to Suite #701. Our Head Butler and Private Aviation team look forward to your next arrival in Geneva.',
+        admin_responder_name: 'Henri de Valois — Palace Director',
+        admin_responded_at: '2026-10-12 18:30:00'
+      },
+      {
+        booking_reference: 'AUR-2026-SKY88',
+        room_id: getRoomId('PH-01'),
+        room_number: 'PH-01',
+        category_name: 'Penthouse / Royal Suite',
+        guest_name: 'Lord Julian Sterling',
+        guest_email: 'julian.sterling@example.com',
+        guest_country: 'United Kingdom',
+        stay_type: 'Honeymoon & Anniversary',
+        rating: 5,
+        title: 'Sky Crown Duplex Penthouse & Heated Rooftop Infinity Pool Are Peerless',
+        comment: 'We celebrated our tenth anniversary in Penthouse #PH-01. Swimming in our private 32°C rooftop infinity plunge pool overlooking the Jet d’Eau and Mont-Blanc at sunset is an experience that no other hotel in Europe can match.',
+        verified_stay: 1,
+        helpful_count: 19,
+        admin_response: 'Dear Lord Sterling, warm congratulations once again on your anniversary. We are delighted that the Sky Crown Duplex Penthouse and private sommelier cellar made your celebration unforgettable.',
+        admin_responder_name: 'Henri de Valois — Palace Director',
+        admin_responded_at: '2026-10-10 14:15:00'
+      },
+      {
+        booking_reference: 'AUR-2026-LUX501',
+        room_id: getRoomId('501'),
+        room_number: '501',
+        category_name: 'Luxury Suite',
+        guest_name: 'Comtesse Claire de Montmirail',
+        guest_email: 'claire.montmirail@example.fr',
+        guest_country: 'France',
+        stay_type: 'Gastronomy & Wellness',
+        rating: 5,
+        title: 'Three-Michelin-Starred Perfection at Le Jardin d’Or & Travertine Spa',
+        comment: 'The Grand Aurélia Salon Suite (#501) feels like a private Parisian-Genevan residence with its chevron oak parquet and marble fireplace. Combine that with the 90-minute Gold Leaf Hammam ritual and the Chef’s Table tasting menu, and you have pure sanctuary.',
+        verified_stay: 1,
+        helpful_count: 15,
+        admin_response: '',
+        admin_responder_name: '',
+        admin_responded_at: null
+      },
+      {
+        booking_reference: 'AUR-2026-ACC105',
+        room_id: getRoomId('105'),
+        room_number: '105',
+        category_name: 'Accessible Room',
+        guest_name: 'Dr. Henrik Lindqvist',
+        guest_email: 'h.lindqvist@example.se',
+        guest_country: 'Sweden',
+        stay_type: 'Couple & Leisure',
+        rating: 5,
+        title: 'True Barrier-Free Ultra-Luxury Without a Single Aesthetic Compromise',
+        comment: 'Suite #105 sets the global benchmark for accessible five-star design. Zero-threshold Calacatta marble roll-in spa shower, effortless voice-controlled drapery, and level access directly onto the botanical garden terrace.',
+        verified_stay: 1,
+        helpful_count: 12,
+        admin_response: 'Dear Dr. Lindqvist, thank you for your kind words. Universal barrier-free elegance was a founding architectural pillar of Maison Aurélia.',
+        admin_responder_name: 'Claire Moreau — Resident Manager',
+        admin_responded_at: '2026-10-08 11:00:00'
+      },
+      {
+        booking_reference: 'AUR-2026-FAM401',
+        room_id: getRoomId('401'),
+        room_number: '401',
+        category_name: 'Family Room',
+        guest_name: 'Sheikh Tariq Al-Maktoum',
+        guest_email: 'tariq.almaktoum@example.ae',
+        guest_country: 'United Arab Emirates',
+        stay_type: 'Family Sanctuary',
+        rating: 5,
+        title: 'Seamless Interconnecting Family Wing & Rolls-Royce Chauffeur Fleet',
+        comment: 'Travelling with children requires both privacy and space. Residence #401 provided a private outer vestibule locking both chambers together, bespoke children’s welcome amenities, and impeccable Rolls-Royce Phantom airport transfers.',
+        verified_stay: 1,
+        helpful_count: 11,
+        admin_response: '',
+        admin_responder_name: '',
+        admin_responded_at: null
+      },
+      {
+        booking_reference: 'AUR-2026-DLX201',
+        room_id: getRoomId('201'),
+        room_number: '201',
+        category_name: 'Deluxe Room',
+        guest_name: 'Sophia Vance-Sterling',
+        guest_email: 'sophia.vance@example.us',
+        guest_country: 'United States',
+        stay_type: 'Couple & Leisure',
+        rating: 4,
+        title: 'Serene Waterfront Balcony & Instant Digital Butler Dossier',
+        comment: 'Waking up to the morning mist over Lake Geneva from Room #201’s private wrought-iron balcony was magical. Using the Digital Pre-Arrival Butler Dossier to pre-select our Loro Piana cashmere pillows and room scent worked effortlessly.',
+        verified_stay: 1,
+        helpful_count: 8,
+        admin_response: '',
+        admin_responder_name: '',
+        admin_responded_at: null
+      }
+    ];
+
+    const insRev = db.prepare(`
+      INSERT INTO guest_reviews (
+        reservation_id, booking_reference, room_id, room_number, category_name,
+        guest_name, guest_email, guest_country, stay_type, rating, title, comment,
+        verified_stay, helpful_count, admin_response, admin_responder_name, admin_responded_at
+      ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const rv of seedReviews) {
+      insRev.run(
+        rv.booking_reference,
+        rv.room_id,
+        rv.room_number,
+        rv.category_name,
+        rv.guest_name,
+        rv.guest_email,
+        rv.guest_country,
+        rv.stay_type,
+        rv.rating,
+        rv.title,
+        rv.comment,
+        rv.verified_stay,
+        rv.helpful_count,
+        rv.admin_response,
+        rv.admin_responder_name,
+        rv.admin_responded_at
+      );
+    }
+  } catch (_) {}
+}
+
 function seedDatabase(customDb = null) {
   const db = customDb || getDb();
 
   const existingSettings = db.prepare('SELECT id FROM hotel_settings WHERE id = 1').get();
   if (existingSettings) {
+    seedInitialCustomerReviews(db);
     return { seeded: false, message: 'Database already initialized.' };
   }
 
@@ -781,6 +934,8 @@ function seedDatabase(customDb = null) {
       'Wonderful! May we also request a 20:00 corner table by the fountain at Le Jardin d’Or for our first evening?',
       0
     );
+
+    seedInitialCustomerReviews(db);
 
     return { seeded: true, categoriesCount: categories.length, roomsCount: physicalRooms.length };
   });

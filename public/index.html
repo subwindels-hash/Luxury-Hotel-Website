@@ -34,6 +34,7 @@
         <button type="button" class="nav-link active" data-view="home" data-i18n="nav_rooms" onclick="window.AureliaApp.switchView('home')">Suites &amp; Rooms</button>
         <button type="button" class="nav-link" onclick="window.AureliaApp.scrollToSection('visualizer3dSection')" data-i18n="nav_visualizer">3D Suite Explorer</button>
         <button type="button" class="nav-link" onclick="window.AureliaApp.scrollToSection('experiencesSection')" data-i18n="nav_experiences">Dining &amp; Sanctuary</button>
+        <button type="button" class="nav-link" data-view="reviews" data-i18n="nav_reviews" onclick="window.AureliaApp.switchView('reviews')">⭐ Customer Reviews</button>
         <button type="button" class="nav-link" data-view="contact" data-i18n="nav_contact" onclick="window.AureliaApp.switchView('contact')">📍 Contact &amp; Map</button>
         <button type="button" class="nav-link" data-view="lookup" data-i18n="nav_lookup" onclick="window.AureliaApp.switchView('lookup')">My Booking</button>
         <button type="button" class="nav-link" data-view="portal" data-i18n="nav_portal" onclick="window.AureliaApp.switchView('portal')">Guest Privé</button>
@@ -651,6 +652,201 @@
   </section>
 
   <!-- ===================================================================== -->
+  <!-- VIEW 2B: VERIFIED CUSTOMER REVIEWS & GUEST TESTIMONIALS PAGE          -->
+  <!-- ===================================================================== -->
+  <section id="view-reviews" class="container hidden" style="padding-top:2.5rem;padding-bottom:4rem;">
+    <div class="section-header" style="margin-top:0;display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:1rem;">
+      <div>
+        <span class="section-eyebrow">VERIFIED GUEST IMPRESSIONS • FIVE-STAR PALACE BENCHMARK</span>
+        <h2 class="section-title" style="margin-bottom:0.35rem;">Customer Reviews &amp; Verified Stay Testimonials</h2>
+        <p style="color:var(--text-muted);font-size:0.95rem;max-width:780px;">
+          Read authentic stay reviews from our guests across all 10 residence categories, inspect official Palace Director responses, or share your own Maison Aurélia experience.
+        </p>
+      </div>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <button type="button" class="btn-primary" style="padding:0.55rem 1.1rem;font-size:0.82rem;" onclick="document.getElementById('writeCustomerReviewCard').scrollIntoView({ behavior: 'smooth' })">
+          ✍️ Write a Customer Review
+        </button>
+        <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.switchView('home')">
+          Explore Suites &amp; Rooms &rarr;
+        </button>
+      </div>
+    </div>
+
+    <!-- Aggregate Rating Summary & Hospitality Pillar Scores Banner -->
+    <div id="reviewsSummaryBanner" class="price-summary-card" style="position:static;background:var(--bg-obsidian);color:var(--text-light);margin-bottom:1.5rem;">
+      <!-- Rendered dynamically by window.AureliaApp.renderReviewsPage() -->
+    </div>
+
+    <!-- Interactive Filter, Suite Selector & Search Bar -->
+    <div class="price-summary-card" style="position:static;background:#ffffff;margin-bottom:1.75rem;padding:1.1rem 1.35rem;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:0.75rem;align-items:end;">
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterRating">Star Rating</label>
+          <select id="reviewFilterRating" onchange="window.AureliaApp.filterCustomerReviews()">
+            <option value="all">All Star Ratings</option>
+            <option value="5">★★★★★ Only (5 Stars)</option>
+            <option value="4">★★★★☆ &amp; Above (4+ Stars)</option>
+            <option value="3">★★★☆☆ &amp; Above (3+ Stars)</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterRoom">Suite / Room Residence</label>
+          <select id="reviewFilterRoom" onchange="window.AureliaApp.filterCustomerReviews()">
+            <option value="all">All Suites &amp; Rooms</option>
+            <option value="701">#701 • Imperial Presidential Suite</option>
+            <option value="PH-01">#PH-01 • Sky Crown Duplex Penthouse</option>
+            <option value="501">#501 • Grand Aurélia Salon Suite</option>
+            <option value="401">#401 • Family Interconnecting Wing</option>
+            <option value="201">#201 • Lakefront Panorama Deluxe</option>
+            <option value="105">#105 • Barrier-Free Sanctuary Suite</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterStayType">Stay Occasion</label>
+          <select id="reviewFilterStayType" onchange="window.AureliaApp.filterCustomerReviews()">
+            <option value="all">All Stay Occasions</option>
+            <option value="VIP Diplomatic & Executive">VIP Diplomatic &amp; Executive</option>
+            <option value="Honeymoon & Anniversary">Honeymoon &amp; Anniversary</option>
+            <option value="Gastronomy & Wellness">Gastronomy &amp; Wellness</option>
+            <option value="Couple & Leisure">Couple &amp; Leisure</option>
+            <option value="Family Sanctuary">Family Sanctuary</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterSort">Sort Reviews By</label>
+          <select id="reviewFilterSort" onchange="window.AureliaApp.filterCustomerReviews()">
+            <option value="newest">Most Recent First</option>
+            <option value="helpful">Most Helpful First</option>
+            <option value="highest">Highest Rated First</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="reviewFilterSearch">Search Keyword / Guest</label>
+          <input type="text" id="reviewFilterSearch" placeholder="Search e.g. Helipad, Spa, #701..." oninput="window.AureliaApp.filterCustomerReviews()" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Main 2-Column Customer Reviews Feed + Write Review Form -->
+    <div class="checkout-columns" style="align-items:start;">
+      <!-- LEFT COLUMN: Customer Reviews Feed -->
+      <div>
+        <div id="customerReviewsListContainer" style="display:flex;flex-direction:column;gap:1.15rem;">
+          <!-- Populated dynamically by window.AureliaApp -->
+        </div>
+      </div>
+
+      <!-- RIGHT COLUMN: Submit a Customer Review Card -->
+      <div id="writeCustomerReviewCard" class="price-summary-card" style="position:static;background:#ffffff;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.4rem;margin-bottom:0.35rem;">
+          <span class="section-eyebrow" style="margin-bottom:0;">SHARE YOUR PALACE IMPRESSION</span>
+          <span class="status-pill confirmed" style="font-size:0.72rem;">Instant Live Publication</span>
+        </div>
+        <h3 style="font-family:var(--font-serif);font-size:1.5rem;margin-bottom:0.35rem;">Write a Customer Review</h3>
+        <p style="font-size:0.83rem;color:var(--text-muted);margin-bottom:0.9rem;">
+          Stayed with us at Maison Aurélia or dined at Le Jardin d’Or? Share your review below. Enter your Booking Reference if you wish to attach a <strong>Verified Stay Badge</strong>.
+        </p>
+
+        <!-- 1-Click Quick Review Presets for Testing -->
+        <div style="margin-bottom:0.9rem;">
+          <span style="font-size:0.74rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:0.35rem;">Quick Review Presets:</span>
+          <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+            <button type="button" class="nearby-date-btn" style="font-size:0.73rem;" onclick="window.AureliaApp.fillCustomerReviewPreset('presidential')">★ #701 Presidential &amp; Helipad</button>
+            <button type="button" class="nearby-date-btn" style="font-size:0.73rem;" onclick="window.AureliaApp.fillCustomerReviewPreset('penthouse')">★ #PH-01 Sky Penthouse Pool</button>
+            <button type="button" class="nearby-date-btn" style="font-size:0.73rem;" onclick="window.AureliaApp.fillCustomerReviewPreset('spa')">★ Michelin &amp; Thermal Spa</button>
+          </div>
+        </div>
+
+        <form id="customerReviewPageForm" onsubmit="window.AureliaApp.handleCustomerReviewPageSubmit(event)">
+          <!-- Interactive Star Rating Selector -->
+          <div class="form-group">
+            <label>Overall Rating *</label>
+            <input type="hidden" id="reviewFormRating" value="5" />
+            <div id="reviewStarPickerRow" style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="5" onclick="window.AureliaApp.setCustomerReviewRating(5)" style="background:rgba(212,175,99,0.2);border-color:var(--gold-primary);color:#92400e;font-weight:700;">★★★★★ (5/5 Peerless)</button>
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="4" onclick="window.AureliaApp.setCustomerReviewRating(4)">★★★★☆ (4/5)</button>
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="3" onclick="window.AureliaApp.setCustomerReviewRating(3)">★★★☆☆ (3/5)</button>
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="2" onclick="window.AureliaApp.setCustomerReviewRating(2)">★★☆☆☆ (2/5)</button>
+              <button type="button" class="nearby-date-btn review-star-btn" data-star="1" onclick="window.AureliaApp.setCustomerReviewRating(1)">★☆☆☆☆ (1/5)</button>
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="reviewGuestName">Your Full Name *</label>
+              <input type="text" id="reviewGuestName" placeholder="e.g. Elena Rostova" required />
+            </div>
+            <div class="form-group">
+              <label for="reviewGuestCountry">Country / Residence</label>
+              <input type="text" id="reviewGuestCountry" placeholder="e.g. Switzerland" value="Switzerland" />
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="reviewGuestEmail">Email Address (Optional)</label>
+              <input type="email" id="reviewGuestEmail" placeholder="guest@example.com" />
+            </div>
+            <div class="form-group">
+              <label for="reviewBookingRef">Booking Reference (Optional)</label>
+              <input type="text" id="reviewBookingRef" placeholder="e.g. AUR-2026-XXXXXX" />
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="reviewRoomNumber">Suite / Room Stayed In</label>
+              <select id="reviewRoomNumber">
+                <option value="701">#701 • The Imperial Presidential Residence</option>
+                <option value="PH-01">#PH-01 • Sky Crown Duplex Penthouse</option>
+                <option value="501">#501 • Grand Aurélia Salon Suite</option>
+                <option value="305">#305 • Junior Atelier Corner Suite</option>
+                <option value="301">#301 • Executive Club Lake Chamber</option>
+                <option value="401">#401 • Family Interconnecting Residence</option>
+                <option value="205">#205 • Superior Botanical Terrace</option>
+                <option value="201">#201 • Lakefront Panorama Deluxe</option>
+                <option value="105">#105 • Universal Barrier-Free Suite</option>
+                <option value="101">#101 • Classic Courtyard Queen</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="reviewStayType">Stay Occasion</label>
+              <select id="reviewStayType">
+                <option value="Couple & Leisure">Couple &amp; Leisure</option>
+                <option value="VIP Diplomatic & Executive">VIP Diplomatic &amp; Executive</option>
+                <option value="Honeymoon & Anniversary">Honeymoon &amp; Anniversary</option>
+                <option value="Gastronomy & Wellness">Gastronomy &amp; Wellness</option>
+                <option value="Family Sanctuary">Family Sanctuary</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="reviewTitle">Review Headline / Title *</label>
+            <input type="text" id="reviewTitle" placeholder="Summarize your stay at Maison Aurélia..." required />
+          </div>
+
+          <div class="form-group">
+            <label for="reviewComment">Detailed Review &amp; Highlights *</label>
+            <textarea id="reviewComment" rows="4" placeholder="Share your impressions of your suite, butler service, Michelin dining, or thermal sanctuary..." required></textarea>
+          </div>
+
+          <button type="submit" class="btn-primary" style="width:100%;">
+            ⭐ Publish Customer Review
+          </button>
+        </form>
+
+        <div id="reviewSubmissionResultBox" class="hidden" style="margin-top:0.95rem;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
   <!-- VIEW 2: GUEST BOOKING LOOKUP, INVOICE & SELF-SERVICE CANCELLATION     -->
   <!-- ===================================================================== -->
   <section id="view-lookup" class="container hidden" style="padding-top:2.5rem;padding-bottom:4rem;">
@@ -922,6 +1118,7 @@
         <h4 class="footer-heading">Quick Portal Links</h4>
         <div style="display:flex;flex-direction:column;gap:0.5rem;align-items:flex-start;">
           <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('home')">Explore Room Catalogue</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('reviews')">⭐ Customer Reviews &amp; Testimonials</button>
           <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('contact')">📍 Contact Page &amp; Interactive Map</button>
           <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('lookup')">Retrieve Booking / Cancel Stay</button>
           <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('portal')">Guest Privé Account &amp; Loyalty</button>

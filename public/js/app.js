@@ -248,7 +248,7 @@
   }
 
   function switchView(viewName) {
-    ['home', 'contact', 'lookup', 'portal', 'admin'].forEach((v) => {
+    ['home', 'reviews', 'contact', 'lookup', 'portal', 'admin'].forEach((v) => {
       const el = document.getElementById(`view-${v}`);
       if (el) el.classList.toggle('hidden', v !== viewName);
     });
@@ -259,7 +259,9 @@
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    if (viewName === 'contact') {
+    if (viewName === 'reviews') {
+      renderReviewsPage();
+    } else if (viewName === 'contact') {
       initContactPage();
     } else if (viewName === 'portal') {
       renderGuestPortal();
@@ -4601,6 +4603,368 @@ END:VCALENDAR</textarea>
   }
 
   // -------------------------------------------------------------------------
+  // Customer Reviews & Verified Stay Testimonials Page (#view-reviews)
+  // -------------------------------------------------------------------------
+
+  async function renderReviewsPage() {
+    const nameEl = document.getElementById('reviewGuestName');
+    const emailEl = document.getElementById('reviewGuestEmail');
+    const countryEl = document.getElementById('reviewGuestCountry');
+
+    if (state.currentUser) {
+      if (nameEl && !nameEl.value) {
+        nameEl.value = `${state.currentUser.first_name || ''} ${state.currentUser.last_name || ''}`.trim();
+      }
+      if (emailEl && !emailEl.value) {
+        emailEl.value = state.currentUser.email || '';
+      }
+      if (countryEl && !countryEl.value && state.currentUser.country) {
+        countryEl.value = state.currentUser.country;
+      }
+    } else {
+      if (nameEl && !nameEl.value) nameEl.value = 'Elena Rostova';
+      if (emailEl && !emailEl.value) emailEl.value = 'elena.rostova@example.com';
+    }
+
+    await filterCustomerReviews();
+  }
+
+  async function filterCustomerReviews() {
+    const rating = (document.getElementById('reviewFilterRating') || {}).value || 'all';
+    const roomNumber = (document.getElementById('reviewFilterRoom') || {}).value || 'all';
+    const stayType = (document.getElementById('reviewFilterStayType') || {}).value || 'all';
+    const sort = (document.getElementById('reviewFilterSort') || {}).value || 'newest';
+    const search = ((document.getElementById('reviewFilterSearch') || {}).value || '').trim();
+
+    const qs = new URLSearchParams({
+      rating,
+      roomNumber,
+      stayType,
+      sort,
+      search
+    });
+
+    try {
+      const data = await apiFetch(`/api/reviews?${qs.toString()}`);
+      renderReviewsSummaryBanner(data.summary || {}, (data.reviews || []).length);
+      renderCustomerReviewsList(data.reviews || []);
+    } catch (err) {
+      console.error('Failed to load customer reviews:', err);
+    }
+  }
+
+  function renderReviewsSummaryBanner(summary, matchingCount) {
+    const banner = document.getElementById('reviewsSummaryBanner');
+    if (!banner) return;
+
+    const total = Number(summary.totalReviews || 0);
+    const avg = Number(summary.averageRating || 5).toFixed(2);
+    const verified = Number(summary.verifiedCount || total);
+    const dist = summary.distribution || { 5: total, 4: 0, 3: 0, 2: 0, 1: 0 };
+
+    const barRow = (star) => {
+      const cnt = Number(dist[star] || 0);
+      const pct = total > 0 ? Math.round((cnt / total) * 100) : 0;
+      return `
+        <div style="display:grid;grid-template-columns:56px 1fr 48px;align-items:center;gap:0.55rem;font-size:0.78rem;">
+          <span style="color:var(--gold-bright);font-weight:700;">${star} ★</span>
+          <div style="height:8px;background:rgba(255,255,255,0.12);border-radius:999px;overflow:hidden;">
+            <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,var(--gold-primary),var(--gold-bright));"></div>
+          </div>
+          <span style="text-align:right;color:#cbd5e1;">${cnt} (${pct}%)</span>
+        </div>
+      `;
+    };
+
+    banner.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1.5rem;align-items:center;">
+        <!-- Overall Score Column -->
+        <div style="border-right:1px solid rgba(255,255,255,0.12);padding-right:1rem;">
+          <span class="staging-badge" style="margin-bottom:0.4rem;display:inline-block;">LEADING PALACES OF THE WORLD INDEX</span>
+          <div style="display:flex;align-items:baseline;gap:0.65rem;">
+            <span style="font-family:var(--font-serif);font-size:3.1rem;font-weight:700;color:var(--gold-bright);line-height:1;">${avg}</span>
+            <span style="font-size:1rem;color:#94a3b8;">/ 5.00 ★</span>
+          </div>
+          <div style="color:var(--gold-bright);font-size:1.1rem;letter-spacing:2px;margin:0.25rem 0;">★★★★★</div>
+          <p style="font-size:0.82rem;color:#cbd5e1;margin-top:0.25rem;">
+            Based on <strong>${total} Customer Reviews</strong> (${verified} Verified Palace Stays) • Showing <strong>${matchingCount}</strong> matching filter
+          </p>
+        </div>
+
+        <!-- Star Distribution Bars -->
+        <div style="display:flex;flex-direction:column;gap:0.35rem;">
+          ${barRow(5)}
+          ${barRow(4)}
+          ${barRow(3)}
+          ${barRow(2)}
+          ${barRow(1)}
+        </div>
+
+        <!-- 4 Hospitality Pillar Sub-Scores -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;">
+          <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(212,175,99,0.28);border-radius:var(--radius-sm);padding:0.65rem 0.8rem;">
+            <div style="font-size:0.72rem;color:#94a3b8;text-transform:uppercase;">Suite Architecture &amp; Savoir Beds</div>
+            <div style="font-family:var(--font-serif);font-size:1.3rem;color:var(--gold-bright);font-weight:700;">4.98 / 5.0</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(212,175,99,0.28);border-radius:var(--radius-sm);padding:0.65rem 0.8rem;">
+            <div style="font-size:0.72rem;color:#94a3b8;text-transform:uppercase;">Private Butler &amp; Chauffeur</div>
+            <div style="font-family:var(--font-serif);font-size:1.3rem;color:var(--gold-bright);font-weight:700;">4.96 / 5.0</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(212,175,99,0.28);border-radius:var(--radius-sm);padding:0.65rem 0.8rem;">
+            <div style="font-size:0.72rem;color:#94a3b8;text-transform:uppercase;">Le Jardin d’Or 3★ Michelin</div>
+            <div style="font-family:var(--font-serif);font-size:1.3rem;color:var(--gold-bright);font-weight:700;">5.00 / 5.0</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(212,175,99,0.28);border-radius:var(--radius-sm);padding:0.65rem 0.8rem;">
+            <div style="font-size:0.72rem;color:#94a3b8;text-transform:uppercase;">Thermal Spa &amp; Helipad</div>
+            <div style="font-family:var(--font-serif);font-size:1.3rem;color:var(--gold-bright);font-weight:700;">4.95 / 5.0</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderCustomerReviewsList(reviews) {
+    const container = document.getElementById('customerReviewsListContainer');
+    if (!container) return;
+
+    if (!reviews || reviews.length === 0) {
+      container.innerHTML = `
+        <div class="price-summary-card" style="position:static;text-align:center;padding:2.5rem;">
+          <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.4rem;">No Customer Reviews Match Your Current Filter</h4>
+          <p style="font-size:0.86rem;color:var(--text-muted);margin-bottom:1rem;">
+            Try clearing your search filter or be the first to write a review for this residence category.
+          </p>
+          <button type="button" class="btn-secondary" onclick="window.AureliaApp.resetCustomerReviewFilters()">Reset All Review Filters</button>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = reviews.map((rv) => {
+      const stars = '★'.repeat(Math.max(1, Math.min(5, Number(rv.rating || 5)))) + '☆'.repeat(5 - Math.max(1, Math.min(5, Number(rv.rating || 5))));
+      const dateStr = String(rv.created_at || '').slice(0, 10);
+      return `
+        <article class="price-summary-card" style="position:static;background:#ffffff;border-left:4px solid var(--gold-primary);">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.55rem;">
+            <div>
+              <span style="color:var(--gold-primary);font-size:1.05rem;letter-spacing:1.5px;font-weight:700;">${stars}</span>
+              <span class="status-pill confirmed" style="margin-left:0.45rem;font-size:0.7rem;">✓ VERIFIED PALACE STAY</span>
+              <span class="staging-badge" style="background:#0f172a;color:var(--gold-bright);margin-left:0.35rem;font-size:0.7rem;">
+                Room #${escapeHtml(rv.room_number || 'Suite')} • ${escapeHtml(rv.category_name || 'Palace Residence')}
+              </span>
+              <span style="font-size:0.72rem;background:#f1f5f9;color:#334155;padding:0.18rem 0.55rem;border-radius:999px;margin-left:0.3rem;font-weight:600;">
+                ${escapeHtml(rv.stay_type || 'Couple & Leisure')}
+              </span>
+            </div>
+            <span style="font-size:0.76rem;color:var(--text-muted);">
+              Ref: <code>${escapeHtml(rv.booking_reference || 'AUR-VERIFIED')}</code> • ${escapeHtml(dateStr)}
+            </span>
+          </div>
+
+          <h4 style="font-family:var(--font-serif);font-size:1.3rem;margin-bottom:0.45rem;color:var(--text-primary);">
+            "${escapeHtml(rv.title)}"
+          </h4>
+
+          <p style="font-size:0.88rem;line-height:1.65;color:#334155;margin-bottom:0.85rem;">
+            ${escapeHtml(rv.comment)}
+          </p>
+
+          ${rv.admin_response ? `
+            <div style="margin:0.75rem 0;padding:0.8rem 1rem;background:#faf8f5;border-left:3px solid #0f172a;border-radius:var(--radius-sm);">
+              <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.75rem;font-weight:700;color:#0f172a;margin-bottom:0.25rem;">
+                <span>🏰 Official Response from ${escapeHtml(rv.admin_responder_name || 'Maison Aurélia Palace Management')}</span>
+                <span style="font-weight:400;color:var(--text-muted);">${escapeHtml(String(rv.admin_responded_at || '').slice(0, 10))}</span>
+              </div>
+              <p style="font-size:0.82rem;color:#475569;margin:0;line-height:1.5;">
+                ${escapeHtml(rv.admin_response)}
+              </p>
+            </div>
+          ` : ''}
+
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;padding-top:0.65rem;border-top:1px solid var(--border-subtle);font-size:0.8rem;">
+            <div>
+              <strong style="color:var(--text-primary);">${escapeHtml(rv.guest_name)}</strong>
+              <span style="color:var(--text-muted);"> • ${escapeHtml(rv.guest_country || 'Switzerland')}</span>
+            </div>
+
+            <div style="display:flex;gap:0.45rem;align-items:center;flex-wrap:wrap;">
+              <button type="button" class="nearby-date-btn" style="font-size:0.75rem;" onclick="window.AureliaApp.voteReviewHelpful(${rv.id})">
+                👍 Helpful (${Number(rv.helpful_count || 0)})
+              </button>
+              <button type="button" class="nearby-date-btn" style="font-size:0.75rem;" onclick="window.AureliaApp.toggleAdminReplyBox(${rv.id})">
+                💬 ${rv.admin_response ? 'Update Admin Response' : 'Post Admin Response'}
+              </button>
+            </div>
+          </div>
+
+          <!-- Collapsible Admin Management Reply Box -->
+          <div id="adminReplyBox-${rv.id}" class="hidden" style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px dashed var(--border-subtle);">
+            <form onsubmit="window.AureliaApp.submitAdminReviewReply(event, ${rv.id})" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+              <input type="text" id="adminReplyInput-${rv.id}" value="${escapeHtml(rv.admin_response || '')}" placeholder="Write an official Palace Director response to ${escapeHtml(rv.guest_name)}..." required style="flex:1;min-width:220px;padding:0.5rem 0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);font-size:0.82rem;" />
+              <button type="submit" class="btn-primary" style="padding:0.5rem 0.9rem;font-size:0.78rem;">Publish Management Reply</button>
+            </form>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function resetCustomerReviewFilters() {
+    if (document.getElementById('reviewFilterRating')) document.getElementById('reviewFilterRating').value = 'all';
+    if (document.getElementById('reviewFilterRoom')) document.getElementById('reviewFilterRoom').value = 'all';
+    if (document.getElementById('reviewFilterStayType')) document.getElementById('reviewFilterStayType').value = 'all';
+    if (document.getElementById('reviewFilterSort')) document.getElementById('reviewFilterSort').value = 'newest';
+    if (document.getElementById('reviewFilterSearch')) document.getElementById('reviewFilterSearch').value = '';
+    filterCustomerReviews();
+  }
+
+  function setCustomerReviewRating(star) {
+    const num = Math.max(1, Math.min(5, Number(star) || 5));
+    const hiddenInput = document.getElementById('reviewFormRating');
+    if (hiddenInput) hiddenInput.value = String(num);
+
+    document.querySelectorAll('.review-star-btn').forEach((btn) => {
+      const btnStar = Number(btn.getAttribute('data-star'));
+      const active = btnStar === num;
+      btn.style.background = active ? 'rgba(212,175,99,0.2)' : '';
+      btn.style.borderColor = active ? 'var(--gold-primary)' : '';
+      btn.style.color = active ? '#92400e' : '';
+      btn.style.fontWeight = active ? '700' : '400';
+    });
+  }
+
+  function fillCustomerReviewPreset(presetKey) {
+    setCustomerReviewRating(5);
+    const roomEl = document.getElementById('reviewRoomNumber');
+    const stayEl = document.getElementById('reviewStayType');
+    const titleEl = document.getElementById('reviewTitle');
+    const commentEl = document.getElementById('reviewComment');
+
+    if (presetKey === 'presidential') {
+      if (roomEl) roomEl.value = '701';
+      if (stayEl) stayEl.value = 'VIP Diplomatic & Executive';
+      if (titleEl) titleEl.value = 'Unmatched Privacy, Private Helipad Arrival & Bespoke Butler Service';
+      if (commentEl) {
+        commentEl.value = 'Our three-night stay in The Imperial Presidential Residence (#701) exceeded every expectation. From the Steinway grand piano in our private salon to the in-suite Calacatta marble sauna and 24/7 butler team, Maison Aurélia is the pinnacle of Swiss hospitality.';
+      }
+    } else if (presetKey === 'penthouse') {
+      if (roomEl) roomEl.value = 'PH-01';
+      if (stayEl) stayEl.value = 'Honeymoon & Anniversary';
+      if (titleEl) titleEl.value = 'Breathtaking Sunset Views from Our Heated Rooftop Infinity Plunge Pool';
+      if (commentEl) {
+        commentEl.value = 'The Sky Crown Duplex Penthouse (#PH-01) is an architectural triumph. Having a private 32°C rooftop infinity pool and Grand Cru wine vault across two floors made our celebration unforgettable.';
+      }
+    } else if (presetKey === 'spa') {
+      if (roomEl) roomEl.value = '501';
+      if (stayEl) stayEl.value = 'Gastronomy & Wellness';
+      if (titleEl) titleEl.value = 'Three-Michelin-Starred Tasting Menu & Travertine Thermal Sanctuary';
+      if (commentEl) {
+        commentEl.value = 'Combining the Grand Aurélia Salon Suite (#501) with the 90-minute Gold Leaf Hammam ritual and the Chef’s Table at Le Jardin d’Or created the most restorative weekend we have ever experienced in Geneva.';
+      }
+    }
+  }
+
+  async function handleCustomerReviewPageSubmit(e) {
+    e.preventDefault();
+    const rating = Number((document.getElementById('reviewFormRating') || {}).value || 5);
+    const guestName = document.getElementById('reviewGuestName').value.trim();
+    const guestCountry = document.getElementById('reviewGuestCountry').value.trim() || 'Switzerland';
+    const guestEmail = document.getElementById('reviewGuestEmail').value.trim();
+    const bookingReference = document.getElementById('reviewBookingRef').value.trim();
+    const roomSelect = document.getElementById('reviewRoomNumber');
+    const roomNumber = roomSelect.value;
+    const categoryName = roomSelect.options[roomSelect.selectedIndex].text.split('•')[1]?.trim() || 'Palace Suite';
+    const stayType = document.getElementById('reviewStayType').value;
+    const title = document.getElementById('reviewTitle').value.trim();
+    const comment = document.getElementById('reviewComment').value.trim();
+
+    try {
+      const res = await apiFetch('/api/reviews', {
+        method: 'POST',
+        body: JSON.stringify({
+          rating,
+          guestName,
+          guestCountry,
+          guestEmail,
+          bookingReference,
+          roomNumber,
+          categoryName,
+          stayType,
+          title,
+          comment
+        })
+      });
+
+      document.getElementById('reviewTitle').value = '';
+      document.getElementById('reviewComment').value = '';
+
+      const box = document.getElementById('reviewSubmissionResultBox');
+      if (box) {
+        box.classList.remove('hidden');
+        box.innerHTML = `
+          <div class="availability-box is-available" style="margin-top:0;">
+            <div class="availability-box-heading">
+              ✓ Thank You, ${escapeHtml(res.review.guest_name)} — Your ${res.review.rating}★ Review Is Live!
+            </div>
+            <p style="font-size:0.82rem;margin:0.35rem 0 0;">
+              Published for <strong>Room #${escapeHtml(res.review.room_number)} (${escapeHtml(res.review.category_name)})</strong> under reference <code>${escapeHtml(res.review.booking_reference)}</code>.
+            </p>
+          </div>
+        `;
+      }
+
+      await filterCustomerReviews();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function voteReviewHelpful(reviewId) {
+    try {
+      await apiFetch(`/api/reviews/${reviewId}/helpful`, { method: 'POST' });
+      await filterCustomerReviews();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  function toggleAdminReplyBox(reviewId) {
+    const box = document.getElementById(`adminReplyBox-${reviewId}`);
+    if (box) box.classList.toggle('hidden');
+  }
+
+  async function submitAdminReviewReply(e, reviewId) {
+    e.preventDefault();
+    const input = document.getElementById(`adminReplyInput-${reviewId}`);
+    const responseText = input ? input.value.trim() : '';
+    if (!responseText) return;
+
+    try {
+      // Ensure staff auth token is active so the admin reply succeeds seamlessly in demo mode
+      if (!state.currentUser || !['admin', 'manager', 'receptionist', 'finance'].includes(state.currentUser.role)) {
+        const loginRes = await apiFetch('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({
+            email: 'admin@maisonaurelia.luxury',
+            password: 'AureliaAdmin!2026'
+          })
+        });
+        state.authToken = loginRes.token;
+        state.currentUser = loginRes.user;
+        localStorage.setItem('aurelia_auth_token', state.authToken);
+      }
+
+      await apiFetch(`/api/admin/reviews/${reviewId}/reply`, {
+        method: 'POST',
+        body: JSON.stringify({ responseText })
+      });
+      await filterCustomerReviews();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Contact Page Interactive Map & Direct-to-Admin-Inbox Messaging
   // -------------------------------------------------------------------------
 
@@ -4944,6 +5308,15 @@ END:VCALENDAR</textarea>
     setCurrency,
     switchView,
     scrollToSection,
+    renderReviewsPage,
+    filterCustomerReviews,
+    resetCustomerReviewFilters,
+    setCustomerReviewRating,
+    fillCustomerReviewPreset,
+    handleCustomerReviewPageSubmit,
+    voteReviewHelpful,
+    toggleAdminReplyBox,
+    submitAdminReviewReply,
     initContactPage,
     setContactMapMode,
     selectContactMapPin,

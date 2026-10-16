@@ -252,8 +252,229 @@ router.get('/rooms/:id/calendar.ics', (req, res) => {
 
 router.get('/reviews', (req, res) => {
   const db = getDb();
-  const reviews = db.prepare('SELECT * FROM guest_reviews ORDER BY id DESC LIMIT 20').all();
-  res.json({ reviews });
+  let sql = 'SELECT * FROM guest_reviews WHERE 1=1';
+  const params = [];
+
+  if (req.query.rating && req.query.rating !== 'all') {
+    const minRating = Number(req.query.rating);
+    if (!Number.isNaN(minRating)) {
+      if (minRating === 5) {
+        sql += ' AND rating = 5';
+      } else {
+        sql += ' AND rating >= ?';
+        params.push(minRating);
+      }
+    }
+  }
+  if (req.query.roomNumber && req.query.roomNumber !== 'all') {
+    sql += ' AND (room_number = ? OR category_name = ?)';
+    params.push(req.query.roomNumber, req.query.roomNumber);
+  }
+  if (req.query.stayType && req.query.stayType !== 'all') {
+    sql += ' AND stay_type = ?';
+    params.push(req.query.stayType);
+  }
+  if (req.query.search) {
+    const q = `%${req.query.search}%`;
+    sql += ' AND (guest_name LIKE ? OR title LIKE ? OR comment LIKE ? OR room_number LIKE ? OR category_name LIKE ?)';
+    params.push(q, q, q, q, q);
+  }
+
+  const sort = req.query.sort || 'newest';
+  if (sort === 'helpful') {
+    sql += ' ORDER BY helpful_count DESC, id DESC';
+  } else if (sort === 'highest') {
+    sql += ' ORDER BY rating DESC, helpful_count DESC, id DESC';
+  } else {
+    sql += ' ORDER BY id DESC';
+  }
+
+  const reviews = db.prepare(sql).all(...params);
+  const allReviews = db.prepare('SELECT rating, verified_stay FROM guest_reviews').all();
+  const totalReviews = allReviews.length;
+  const sumRatings = allReviews.reduce((acc, r) => acc + Number(r.rating || 5), 0);
+  const averageRating = totalReviews > 0 ? Number((sumRatings / totalReviews).toFixed(2)) : 5.0;
+
+  const distribution = {
+    5: allReviews.filter((r) => Number(r.rating) === 5).length,
+    4: allReviews.filter((r) => Number(r.rating) === 4).length,
+    3: allReviews.filter((r) => Number(r.rating) === 3).length,
+    2: allReviews.filter((r) => Number(r.rating) === 2).length,
+    1: allReviews.filter((r) => Number(r.rating) === 1).length
+  };
+
+  res.json({
+    reviews,
+    summary: {
+      totalReviews,
+      averageRating,
+      verifiedCount: allReviews.filter((r) => Number(r.verified_stay || 1) === 1).length,
+      distribution
+    }
+  });
+});
+
+// Public / Guest: Submit a Customer Review on the Customer Reviews Page
+router.post('/reviews', (req, res) => {
+  const {
+    guestName,
+    guestEmail = '',
+    guestCountry = 'Switzerland',
+    bookingReference = '',
+    roomNumber = '701',
+    categoryName = 'Presidential Suite',
+    stayType = 'Couple & Leisure',
+    rating = 5,
+    title,
+    comment
+  } = req.body;
+
+  const resolvedName = String(
+    guestName || (req.user ? `${req.user.first_name} ${req.user.last_name}` : '')
+  ).trim();
+  const resolvedEmail = String(guestEmail || (req.user && req.user.email) || '').trim().toLowerCase();
+
+  if (!resolvedName || !title || !comment) {
+    return res.status(400).json({
+      error: 'MISSING_REVIEW_FIELDS',
+      message: 'Guest Name, Review Title, and Detailed Review Comment are required.'
+    });
+  }
+
+  const numRating = Math.min(5, Math.max(1, Math.round(Number(rating) || 5)));
+  const db = getDb();
+
+  let matchedResId = null;
+  let resolvedRoomId = null;
+  let resolvedRoomNum = String(roomNumber || '701').trim();
+  let resolvedCategoryName = String(categoryName || 'Palace Suite').trim();
+  let resolvedBookingRef = String(bookingReference || '').trim().toUpperCase();
+  let isVerified = 1;
+
+  if (resolvedBookingRef) {
+    const existingRes = getReservationByReference(resolvedBookingRef);
+    if (existingRes && existingRes.status !== 'cancelled') {
+      // Check if this reservation already has a review so we don't violate UNIQUE(reservation_id)
+      const existingRev = db.prepare('SELECT id FROM guest_reviews WHERE reservation_id = ?').get(existingRes.id);
+      if (!existingRev) {
+        matchedResId = existingRes.id;
+      }
+      const firstRoom = (existingRes.rooms && existingRes.rooms[0]) || {};
+      if (firstRoom.room_id) resolvedRoomId = firstRoom.room_id;
+      if (firstRoom.room_number) resolvedRoomNum = firstRoom.room_number;
+      if (firstRoom.category_name) resolvedCategoryName = firstRoom.category_name;
+    }
+  } else {
+    resolvedBookingRef = `AUR-REV-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+  }
+
+  if (!resolvedRoomId) {
+    const rmRow = db.prepare(`
+      SELECT r.id, r.room_number, c.name AS category_name
+      FROM rooms r
+      LEFT JOIN room_categories c ON c.id = r.category_id
+      WHERE r.room_number = ?
+    `).get(resolvedRoomNum);
+    if (rmRow) {
+      resolvedRoomId = rmRow.id;
+      resolvedCategoryName = rmRow.category_name || resolvedCategoryName;
+    }
+  }
+
+  const ins = db.prepare(`
+    INSERT INTO guest_reviews (
+      reservation_id, booking_reference, room_id, room_number, category_name,
+      guest_name, guest_email, guest_country, stay_type, rating, title, comment,
+      verified_stay, helpful_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+  `).run(
+    matchedResId,
+    resolvedBookingRef,
+    resolvedRoomId,
+    resolvedRoomNum,
+    resolvedCategoryName,
+    resolvedName,
+    resolvedEmail,
+    String(guestCountry || 'Switzerland').trim(),
+    String(stayType || 'Couple & Leisure').trim(),
+    numRating,
+    String(title).trim(),
+    String(comment).trim(),
+    isVerified
+  );
+
+  const created = db.prepare('SELECT * FROM guest_reviews WHERE id = ?').get(Number(ins.lastInsertRowid));
+
+  logAudit({
+    eventType: 'CUSTOMER_REVIEW_PUBLISHED',
+    entityType: 'guest_review',
+    entityId: String(created.id),
+    actorId: req.user ? req.user.id : null,
+    actorRole: req.user ? req.user.role : 'guest',
+    actorEmail: resolvedEmail || 'guest@maisonaurelia.luxury',
+    summary: `Customer review (${numRating}/5 stars) published by ${resolvedName} for Room #${resolvedRoomNum}: "${created.title}".`,
+    ipAddress: req.ip
+  });
+
+  broadcastFrontDeskEvent({
+    type: 'CUSTOMER_REVIEW_SUBMITTED',
+    title: `New ${numRating}★ Customer Review (Room #${resolvedRoomNum})`,
+    message: `${resolvedName}: "${created.title}"`
+  });
+
+  res.status(201).json({ review: created });
+});
+
+// Public / Guest: Mark a customer review as helpful
+router.post('/reviews/:id/helpful', (req, res) => {
+  const db = getDb();
+  const revId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM guest_reviews WHERE id = ?').get(revId);
+  if (!existing) {
+    return res.status(404).json({ error: 'REVIEW_NOT_FOUND', message: 'Customer review not found.' });
+  }
+  db.prepare('UPDATE guest_reviews SET helpful_count = helpful_count + 1 WHERE id = ?').run(revId);
+  const updated = db.prepare('SELECT * FROM guest_reviews WHERE id = ?').get(revId);
+  res.json({ review: updated });
+});
+
+// Admin / Staff: Post an official Palace Management response to a customer review
+router.post('/admin/reviews/:id/reply', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  const { responseText } = req.body;
+  if (!responseText || !String(responseText).trim()) {
+    return res.status(400).json({ error: 'EMPTY_RESPONSE', message: 'Management response cannot be empty.' });
+  }
+
+  const db = getDb();
+  const revId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM guest_reviews WHERE id = ?').get(revId);
+  if (!existing) {
+    return res.status(404).json({ error: 'REVIEW_NOT_FOUND', message: 'Customer review not found.' });
+  }
+
+  const responderName = `${req.user.first_name} ${req.user.last_name} — ${req.user.role.toUpperCase()}`;
+  db.prepare(`
+    UPDATE guest_reviews
+    SET admin_response = ?,
+        admin_responder_name = ?,
+        admin_responded_at = datetime('now')
+    WHERE id = ?
+  `).run(String(responseText).trim(), responderName, revId);
+
+  const updated = db.prepare('SELECT * FROM guest_reviews WHERE id = ?').get(revId);
+  res.json({ review: updated });
+});
+
+// Admin / Manager: Delete a customer review
+router.delete('/admin/reviews/:id', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const revId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM guest_reviews WHERE id = ?').get(revId);
+  if (!existing) {
+    return res.status(404).json({ error: 'REVIEW_NOT_FOUND', message: 'Customer review not found.' });
+  }
+  db.prepare('DELETE FROM guest_reviews WHERE id = ?').run(revId);
+  res.json({ deleted: true });
 });
 
 // ---------------------------------------------------------------------------
