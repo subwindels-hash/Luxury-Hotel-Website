@@ -1322,5 +1322,36 @@ describe('Maison Aurélia Luxury Hotel & Online Reservation Platform — End-to-
     );
     assert.equal(resolveRes.status, 200);
     assert.equal(resolveRes.data.thread.status, 'resolved');
+
+    // 7. Admin initiates a proactive thread to the guest, then marks all read & deletes test thread
+    const adminInit = await reqJson(
+      'POST',
+      '/api/admin/messages',
+      {
+        guestEmail: 'elena.rostova@example.com',
+        guestName: 'Elena Rostova',
+        department: 'Head Concierge & Admin',
+        subject: 'Complimentary Rolls-Royce Airport Transfer Confirmation',
+        message: 'Dear Madame Rostova, our chauffeur will greet you at Gate VIP-1.'
+      },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(adminInit.status, 201);
+    assert.equal(adminInit.data.thread.unread_by_guest, 1);
+
+    const markGuestRead = await reqJson('POST', '/api/guest/messages/mark-all-read', {}, {
+      Authorization: `Bearer ${guestToken}`
+    });
+    assert.equal(markGuestRead.status, 200);
+
+    const markAdminRead = await reqJson('POST', '/api/admin/messages/mark-all-read', {}, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(markAdminRead.status, 200);
+
+    const delThread = await reqJson('DELETE', `/api/admin/messages/${adminInit.data.thread.id}`, null, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(delThread.status, 200);
   });
 });

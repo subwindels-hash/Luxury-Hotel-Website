@@ -2276,6 +2276,17 @@
     }
 
     container.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;background:#0b132b;color:#f8fafc;padding:0.75rem 1.1rem;border-radius:6px;margin-bottom:1.25rem;flex-wrap:wrap;gap:0.75rem;border-left:4px solid #c5a059;">
+        <div>
+          <strong style="font-size:0.9rem;color:var(--gold-bright);">💬 Guest Direct Messaging Inbox</strong>
+          <span style="font-size:0.8rem;color:#cbd5e1;margin-left:0.5rem;">Signed in as User: <strong>${escapeHtml(state.currentUser.first_name)} ${escapeHtml(state.currentUser.last_name)}</strong> (${escapeHtml(state.currentUser.email)})</span>
+        </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.markAllGuestMessagesRead()">✓ Mark All Read</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchToAdminMessagingInbox()">Switch to Admin Inbox to Reply as Admin &rarr;</button>
+        </div>
+      </div>
+
       <div class="checkout-columns" style="align-items:start;">
         <div>
           <!-- Start New Message Thread to Admin / Concierge -->
@@ -4253,9 +4264,80 @@ END:VCALENDAR</textarea>
   }
 
   let activeAdminThreadId = null;
+  let adminInboxStatusFilter = 'all';
+  let adminInboxSearchQuery = '';
+
+  async function openMessagingInboxDirect() {
+    if (state.currentUser && ['admin', 'manager', 'receptionist', 'finance'].includes(state.currentUser.role)) {
+      switchView('admin');
+      await switchAdminTab('messages');
+      return;
+    }
+    if (!state.currentUser) {
+      await quickGuestLogin('elena.rostova@example.com', 'GuestPass!2026');
+    }
+    switchView('portal');
+    await switchGuestTab('messages');
+  }
+
+  async function switchToAdminMessagingInbox() {
+    await quickStaffLogin('admin@maisonaurelia.luxury', 'AureliaAdmin!2026');
+    switchView('admin');
+    await switchAdminTab('messages');
+  }
+
+  async function switchToGuestMessagingInbox() {
+    await quickGuestLogin('elena.rostova@example.com', 'GuestPass!2026');
+    switchView('portal');
+    await switchGuestTab('messages');
+  }
+
+  async function markAllGuestMessagesRead() {
+    try {
+      await apiFetch('/api/guest/messages/mark-all-read', { method: 'POST' });
+      await renderGuestPortal();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function markAllAdminMessagesRead() {
+    try {
+      await apiFetch('/api/admin/messages/mark-all-read', { method: 'POST' });
+      await loadAdminTab('messages');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function filterAdminInbox(status, search) {
+    if (status !== undefined && status !== null) adminInboxStatusFilter = status;
+    if (search !== undefined && search !== null) adminInboxSearchQuery = search;
+    await loadAdminTab('messages');
+  }
+
+  function fillAdminQuickReply(templateText) {
+    const el = document.getElementById('admReplyBodyInput');
+    if (el) el.value = templateText;
+  }
+
+  async function handleAdminDeleteMessageThread(threadId) {
+    try {
+      await apiFetch(`/api/admin/messages/${threadId}`, { method: 'DELETE' });
+      if (activeAdminThreadId === Number(threadId)) {
+        activeAdminThreadId = null;
+      }
+      await loadAdminTab('messages');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
 
   async function renderAdminMessagesTab(container) {
-    const inboxData = await apiFetch('/api/admin/messages');
+    const qs = new URLSearchParams();
+    if (adminInboxStatusFilter && adminInboxStatusFilter !== 'all') qs.set('status', adminInboxStatusFilter);
+    if (adminInboxSearchQuery) qs.set('search', adminInboxSearchQuery);
+    const inboxData = await apiFetch(`/api/admin/messages${qs.toString() ? '?' + qs.toString() : ''}`);
     const threads = inboxData.threads || [];
     const m = inboxData.metrics || {
       totalThreads: threads.length,
@@ -4279,6 +4361,17 @@ END:VCALENDAR</textarea>
     }
 
     container.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;background:#0b132b;color:#f8fafc;padding:0.75rem 1.1rem;border-radius:6px;margin-bottom:1.25rem;flex-wrap:wrap;gap:0.75rem;border-left:4px solid #c5a059;">
+        <div>
+          <strong style="font-size:0.9rem;color:var(--gold-bright);">💬 Admin &amp; Concierge Messaging Command Center</strong>
+          <span style="font-size:0.8rem;color:#cbd5e1;margin-left:0.5rem;">Inspect guest messages, send official replies, and manage conversation status.</span>
+        </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.markAllAdminMessagesRead()">✓ Mark All Read</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchToGuestMessagingInbox()">&larr; Switch to User Inbox as Guest</button>
+        </div>
+      </div>
+
       <div class="kpi-grid">
         <div class="kpi-card">
           <div class="kpi-label">Total Conversation Threads</div>
@@ -4304,10 +4397,22 @@ END:VCALENDAR</textarea>
 
       <div class="checkout-columns" style="align-items:start;">
         <div>
-          <!-- Admin Thread Inbox List -->
+          <!-- Admin Thread Inbox List + Filter/Search -->
           <div class="kpi-card" style="margin-bottom:1.25rem;">
-            <h4 style="font-family:var(--font-serif);font-size:1.3rem;margin-bottom:0.65rem;">💬 Guest Messaging Threads (${threads.length})</h4>
-            ${threads.length === 0 ? `<p style="font-size:0.84rem;color:#64748b;">No guest message threads yet.</p>` : threads.map((t) => `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.65rem;flex-wrap:wrap;gap:0.5rem;">
+              <h4 style="font-family:var(--font-serif);font-size:1.3rem;">💬 Guest Messaging Threads (${threads.length})</h4>
+              <select style="padding:0.3rem;font-size:0.78rem;" onchange="window.AureliaApp.filterAdminInbox(this.value, null)">
+                <option value="all" ${adminInboxStatusFilter === 'all' ? 'selected' : ''}>All Threads</option>
+                <option value="awaiting_staff" ${adminInboxStatusFilter === 'awaiting_staff' ? 'selected' : ''}>Awaiting Staff Reply</option>
+                <option value="awaiting_guest" ${adminInboxStatusFilter === 'awaiting_guest' ? 'selected' : ''}>Awaiting Guest</option>
+                <option value="resolved" ${adminInboxStatusFilter === 'resolved' ? 'selected' : ''}>Resolved</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:0.4rem;margin-bottom:0.75rem;">
+              <input type="text" id="admInboxSearchInput" value="${escapeHtml(adminInboxSearchQuery)}" placeholder="Search by guest name, email, ref, or subject..." style="flex:1;padding:0.4rem 0.65rem;font-size:0.8rem;border:1px solid #cbd5e1;border-radius:4px;" />
+              <button type="button" class="btn-secondary" style="padding:0.4rem 0.75rem;font-size:0.78rem;" onclick="window.AureliaApp.filterAdminInbox(null, document.getElementById('admInboxSearchInput').value)">Filter</button>
+            </div>
+            ${threads.length === 0 ? `<p style="font-size:0.84rem;color:#64748b;">No matching guest message threads.</p>` : threads.map((t) => `
               <div onclick="window.AureliaApp.selectAdminMessageThread(${t.id})" style="cursor:pointer;padding:0.75rem;border-radius:6px;margin-bottom:0.5rem;border:1px solid ${t.id === activeAdminThreadId ? 'var(--gold-primary)' : '#e2e8f0'};background:${t.id === activeAdminThreadId ? '#fffbeb' : '#ffffff'};">
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
                   <strong style="font-size:0.85rem;"><code>${escapeHtml(t.thread_reference)}</code> — ${escapeHtml(t.subject)}</strong>
@@ -4383,6 +4488,7 @@ END:VCALENDAR</textarea>
                   <select id="admThreadStatusSelect" style="padding:0.25rem;font-size:0.78rem;" onchange="window.AureliaApp.handleAdminUpdateThreadStatus(${activeThreadDetail.id}, this.value)">
                     ${['awaiting_staff', 'awaiting_guest', 'resolved', 'closed'].map((st) => `<option value="${st}" ${activeThreadDetail.status === st ? 'selected' : ''}>${st}</option>`).join('')}
                   </select>
+                  <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.handleAdminDeleteMessageThread(${activeThreadDetail.id})">Delete</button>
                 </div>
               </div>
               <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-top:0.35rem;">${escapeHtml(activeThreadDetail.subject)}</h4>
@@ -4410,6 +4516,12 @@ END:VCALENDAR</textarea>
             </div>
 
             <form onsubmit="window.AureliaApp.handleAdminReplyMessageSubmit(event, ${activeThreadDetail.id})" style="border-top:1px solid #e2e8f0;padding-top:0.85rem;">
+              <div style="margin-bottom:0.5rem;display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center;">
+                <span style="font-size:0.74rem;font-weight:700;color:#64748b;">Quick Replies:</span>
+                <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.fillAdminQuickReply('It is our pleasure to confirm your arrangement. Our Head Butler and Concierge Desk have scheduled everything according to your preferences.')">✓ Confirm Arrangement</button>
+                <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.fillAdminQuickReply('Your corner table by the fountain at Le Jardin d’Or is reserved for 20:00, and our Head Sommelier awaits your arrival.')">🍽️ Michelin Table Reserved</button>
+                <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.fillAdminQuickReply('Our Rolls-Royce Phantom VIII chauffeur and rooftop helipad team are confirmed and standing by for your arrival.')">🚁 Chauffeur / Helipad Ready</button>
+              </div>
               <div class="form-group" style="margin-bottom:0.65rem;">
                 <label>Official Admin / Concierge Reply to ${escapeHtml(activeThreadDetail.guest_name)} *</label>
                 <textarea id="admReplyBodyInput" rows="3" placeholder="Type your reply to the guest..." required></textarea>
@@ -4531,6 +4643,14 @@ END:VCALENDAR</textarea>
     logout,
     quickGuestLogin,
     switchGuestTab,
+    openMessagingInboxDirect,
+    switchToAdminMessagingInbox,
+    switchToGuestMessagingInbox,
+    markAllGuestMessagesRead,
+    markAllAdminMessagesRead,
+    filterAdminInbox,
+    fillAdminQuickReply,
+    handleAdminDeleteMessageThread,
     selectGuestMessageThread,
     handleGuestStartMessageSubmit,
     handleGuestReplyMessageSubmit,

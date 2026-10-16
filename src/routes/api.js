@@ -3032,4 +3032,45 @@ router.patch('/admin/messages/:threadId/status', requireRoles('receptionist', 'f
   res.json({ thread: { ...updatedThread, messages } });
 });
 
+// Guest: Mark all guest message threads as read
+router.post('/guest/messages/mark-all-read', requireAuth, (req, res) => {
+  const db = getDb();
+  db.prepare(`
+    UPDATE message_threads
+    SET unread_by_guest = 0
+    WHERE user_id = ? OR LOWER(guest_email) = LOWER(?)
+  `).run(req.user.id, req.user.email);
+  res.json({ markedRead: true });
+});
+
+// Admin / Staff: Mark all admin message threads as read
+router.post('/admin/messages/mark-all-read', requireRoles('receptionist', 'finance', 'manager', 'admin'), (_req, res) => {
+  const db = getDb();
+  db.prepare('UPDATE message_threads SET unread_by_admin = 0').run();
+  db.prepare("UPDATE thread_messages SET is_read = 1 WHERE sender_role = 'guest'").run();
+  res.json({ markedRead: true });
+});
+
+// Admin / Staff: Delete / archive a message thread
+router.delete('/admin/messages/:threadId', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const threadId = Number(req.params.threadId);
+  const existing = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  if (!existing) {
+    return res.status(404).json({ error: 'THREAD_NOT_FOUND', message: 'Message thread not found.' });
+  }
+  db.prepare('DELETE FROM message_threads WHERE id = ?').run(threadId);
+  logAudit({
+    eventType: 'ADMIN_MESSAGE_THREAD_DELETED',
+    entityType: 'message_thread',
+    entityId: existing.thread_reference,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Deleted message thread ${existing.thread_reference} (${existing.subject}).`,
+    ipAddress: req.ip
+  });
+  res.json({ deleted: true });
+});
+
 module.exports = router;
