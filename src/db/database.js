@@ -490,6 +490,25 @@ function createSchema(db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS concierge_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_reference TEXT NOT NULL UNIQUE,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      booking_reference TEXT DEFAULT '',
+      guest_name TEXT NOT NULL,
+      guest_email TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'Chauffeur & Transport',
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal', 'vip_urgent')),
+      subject TEXT NOT NULL,
+      details TEXT NOT NULL,
+      preferred_time TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'fulfilled', 'cancelled')),
+      staff_notes TEXT DEFAULT '',
+      handled_by TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_res_rooms_lookup ON reservation_rooms(room_id, status, check_in, check_out);
     CREATE INDEX IF NOT EXISTS idx_holds_lookup ON room_holds(room_id, status, expires_at, check_in, check_out);
     CREATE INDEX IF NOT EXISTS idx_maint_lookup ON maintenance_blocks(room_id, status, start_date, end_date);

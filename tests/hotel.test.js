@@ -1116,4 +1116,119 @@ describe('Maison Aurélia Luxury Hotel & Online Reservation Platform — End-to-
     assert.equal(sseRecent.status, 200);
     assert.ok(sseRecent.data.events.some((e) => e.type === 'HOUSEKEEPING_UPDATED'));
   });
+
+  it('20. Serves Complete Users Dashboard (Loyalty Wallet, Profile, Concierge Desk) and Admin Users/Concierge/Payments CRUD', async () => {
+    const guestLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'elena.rostova@example.com',
+      password: 'GuestPass!2026'
+    });
+    assert.equal(guestLogin.status, 200);
+    const guestToken = guestLogin.data.token;
+
+    const adminLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'admin@maisonaurelia.luxury',
+      password: 'AureliaAdmin!2026'
+    });
+    const adminToken = adminLogin.data.token;
+
+    // 1. Guest Dashboard KPIs & Loyalty Wallet
+    const dashRes = await reqJson('GET', '/api/guest/dashboard', null, {
+      Authorization: `Bearer ${guestToken}`
+    });
+    assert.equal(dashRes.status, 200);
+    assert.ok(dashRes.data.metrics.loyaltyPoints > 0);
+    assert.ok(dashRes.data.metrics.totalStays >= 1);
+
+    // 2. Guest Updates Profile Details
+    const profRes = await reqJson(
+      'PUT',
+      '/api/guest/profile',
+      {
+        firstName: 'Elena',
+        lastName: 'Rostova-Valois',
+        phone: '+41 22 888 9999',
+        country: 'Switzerland'
+      },
+      { Authorization: `Bearer ${guestToken}` }
+    );
+    assert.equal(profRes.status, 200);
+    assert.equal(profRes.data.user.last_name, 'Rostova-Valois');
+
+    // 3. Guest Submits VIP Concierge Service Request
+    const concRes = await reqJson(
+      'POST',
+      '/api/guest/concierge-requests',
+      {
+        category: 'Chauffeur & Aviation',
+        priority: 'vip_urgent',
+        subject: 'Rolls-Royce Phantom VIII Pickup at Geneva Private Jet Terminal',
+        details: 'Arriving on Gulfstream G650 tail HB-JVA at 16:00',
+        preferredTime: '16:00'
+      },
+      { Authorization: `Bearer ${guestToken}` }
+    );
+    assert.equal(concRes.status, 201);
+    const reqId = concRes.data.conciergeRequest.id;
+
+    // 4. Admin Fulfills Concierge Request & Dispatches Notification to Guest
+    const admConcPatch = await reqJson(
+      'PATCH',
+      `/api/admin/concierge-requests/${reqId}`,
+      {
+        status: 'fulfilled',
+        staffNotes: 'Chauffeur Jean-Luc assigned with chilled Krug Grande Cuvée on board.'
+      },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(admConcPatch.status, 200);
+    assert.equal(admConcPatch.data.conciergeRequest.status, 'fulfilled');
+
+    // 5. Admin Creates, Updates (Tier & Points), and Deletes a User Account
+    const createUserRes = await reqJson(
+      'POST',
+      '/api/admin/users',
+      {
+        firstName: 'Lord Julian',
+        lastName: 'Vance',
+        email: 'julian.vance@example.com',
+        role: 'guest',
+        loyaltyTier: 'Gold Sanctuary',
+        loyaltyPoints: 6500,
+        password: 'JulianPassword!2026'
+      },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(createUserRes.status, 201);
+    const newUserId = createUserRes.data.user.id;
+
+    const updateUserRes = await reqJson(
+      'PUT',
+      `/api/admin/users/${newUserId}`,
+      {
+        role: 'guest',
+        loyaltyTier: 'Imperial Black',
+        loyaltyPoints: 16000,
+        isActive: true
+      },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(updateUserRes.status, 200);
+    assert.equal(updateUserRes.data.user.loyalty_tier, 'Imperial Black');
+    assert.equal(updateUserRes.data.user.loyalty_points, 16000);
+
+    const delUserRes = await reqJson(
+      'DELETE',
+      `/api/admin/users/${newUserId}`,
+      null,
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(delUserRes.status, 200);
+
+    // 6. Admin Financial Payments Ledger
+    const payLedger = await reqJson('GET', '/api/admin/payments', null, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(payLedger.status, 200);
+    assert.ok(Array.isArray(payLedger.data.payments));
+  });
 });

@@ -1938,9 +1938,37 @@
     renderGuestPortal();
   }
 
+  async function quickGuestLogin(email, password) {
+    try {
+      const data = await apiFetch('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password })
+      });
+      state.authToken = data.token;
+      state.currentUser = data.user;
+      localStorage.setItem('aurelia_auth_token', data.token);
+      await renderGuestPortal();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  let currentGuestTab = 'overview';
+  let cachedGuestDashboard = null;
+
+  async function switchGuestTab(tabName, btnEl = null) {
+    currentGuestTab = tabName;
+    if (btnEl) {
+      document.querySelectorAll('.guest-tab-btn').forEach((b) => b.classList.remove('active'));
+      btnEl.classList.add('active');
+    }
+    await renderGuestPortal();
+  }
+
   async function renderGuestPortal() {
     const authBox = document.getElementById('portalGuestAuthBox');
     const dashBox = document.getElementById('portalAuthenticatedDashboard');
+    const tabContainer = document.getElementById('guestPortalTabContent');
     if (!authBox || !dashBox) return;
 
     if (!state.currentUser) {
@@ -1952,60 +1980,412 @@
     authBox.classList.add('hidden');
     dashBox.classList.remove('hidden');
 
-    document.getElementById('guestLoyaltyBadge').textContent = state.currentUser.loyalty_tier || 'Aurélia Privé';
-    document.getElementById('guestWelcomeName').textContent = `${state.currentUser.first_name} ${state.currentUser.last_name} (${state.currentUser.email})`;
-    document.getElementById('guestLoyaltyPoints').textContent = `${Number(state.currentUser.loyalty_points || 0).toLocaleString()} Privilege Points`;
-
     try {
-      const [bookingsData, notifData] = await Promise.all([
-        apiFetch('/api/guest/bookings'),
-        apiFetch('/api/guest/notifications')
-      ]);
+      const dash = await apiFetch('/api/guest/dashboard');
+      cachedGuestDashboard = dash;
+      if (dash.user) {
+        state.currentUser = dash.user;
+      }
+      const u = state.currentUser;
+      const m = dash.metrics;
 
-      const bList = document.getElementById('guestBookingsList');
-      if (!bookingsData.reservations || bookingsData.reservations.length === 0) {
-        bList.innerHTML = `<div class="price-summary-card" style="position:static;"><p>You have no reservations yet. Explore our room catalogue to book a stay.</p></div>`;
-      } else {
-        bList.innerHTML = bookingsData.reservations.map((r) => `
-          <div class="price-summary-card" style="position:static;background:#fff;margin-bottom:1rem;">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-              <strong><code>${escapeHtml(r.booking_reference)}</code> (${escapeHtml(r.check_in)} &rarr; ${escapeHtml(r.check_out)})</strong>
-              <span class="status-pill ${escapeHtml(r.status)}">${escapeHtml(r.status)}</span>
+      document.getElementById('guestLoyaltyBadge').textContent = m.loyaltyTier;
+      document.getElementById('guestWelcomeName').textContent = `${u.first_name} ${u.last_name} (${u.email})`;
+      document.getElementById('guestLoyaltyPoints').textContent = `${m.loyaltyPoints.toLocaleString()} Privilege Points ($${m.redeemableCreditUsd.toLocaleString()} Instant Checkout Credit Available) • Role: ${u.role.toUpperCase()}`;
+
+      if (!tabContainer) return;
+
+      if (currentGuestTab === 'overview') {
+        renderGuestOverviewTab(tabContainer, dash);
+      } else if (currentGuestTab === 'bookings') {
+        renderGuestBookingsTab(tabContainer, dash);
+      } else if (currentGuestTab === 'concierge') {
+        renderGuestConciergeTab(tabContainer, dash);
+      } else if (currentGuestTab === 'waitlist') {
+        renderGuestWaitlistTab(tabContainer, dash);
+      } else if (currentGuestTab === 'profile') {
+        renderGuestProfileTab(tabContainer, dash);
+      }
+    } catch (err) {
+      console.error('Guest portal error:', err);
+    }
+  }
+
+  function renderGuestOverviewTab(container, dash) {
+    const m = dash.metrics;
+    const progressPct = m.loyaltyPoints >= 15000 ? 100 : Math.min(100, Math.round((m.loyaltyPoints / 15000) * 100));
+
+    container.innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Total Palace Stays</div>
+          <div class="kpi-value">${m.totalStays}</div>
+          <div style="font-size:0.75rem;color:#64748b;">${m.upcomingStaysCount} upcoming • ${m.totalNights} total room-nights</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Lifetime Sanctuary Spend</div>
+          <div class="kpi-value">$${m.lifetimeSpendUsd.toLocaleString()}</div>
+          <div style="font-size:0.75rem;color:#64748b;">Includes Suites, Michelin Dining &amp; Spa Folios</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Loyalty Privilege Points</div>
+          <div class="kpi-value" style="color:var(--gold-primary);">${m.loyaltyPoints.toLocaleString()} pts</div>
+          <div style="font-size:0.75rem;color:#64748b;">Tier: <strong>${escapeHtml(m.loyaltyTier)}</strong></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Redeemable Checkout Credit</div>
+          <div class="kpi-value" style="color:var(--emerald-ok);">$${m.redeemableCreditUsd.toLocaleString()}</div>
+          <div style="font-size:0.75rem;color:#64748b;">10 points = $1.00 USD instant suite discount</div>
+        </div>
+      </div>
+
+      <div class="checkout-columns" style="margin-top:1.5rem;">
+        <div class="kpi-card">
+          <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.5rem;">Aurélia Privé Tier Status &amp; Progression</h4>
+          <p style="font-size:0.84rem;color:#475569;margin-bottom:0.75rem;">
+            Current Tier: <strong>${escapeHtml(m.loyaltyTier)}</strong> •
+            ${m.pointsToNextTier > 0 ? `${m.pointsToNextTier.toLocaleString()} points until <strong>${escapeHtml(m.nextTier)}</strong>` : 'Highest Imperial Black Tier Achieved'}
+          </p>
+          <div style="background:#e2e8f0;height:12px;border-radius:999px;overflow:hidden;margin-bottom:1rem;">
+            <div style="width:${progressPct}%;height:100%;background:linear-gradient(90deg, #b89146, #d4af63);"></div>
+          </div>
+          <ul style="padding-left:1.2rem;font-size:0.83rem;color:#334155;line-height:1.7;">
+            <li><strong>Aurélia Privé (1,000+ pts):</strong> Complimentary Thermal Sanctuary access, bespoke pillow &amp; scent menu.</li>
+            <li><strong>Gold Sanctuary (5,000+ pts):</strong> Guaranteed 16:00 late check-out, priority Michelin table seating at <em>Le Jardin d’Or</em>.</li>
+            <li><strong>Imperial Black (15,000+ pts):</strong> Complimentary Rolls-Royce airport transfer, dedicated 24/7 Head Butler &amp; suite upgrades.</li>
+          </ul>
+        </div>
+
+        <div class="kpi-card">
+          <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.65rem;">Quick Guest Actions &amp; Recent Stays</h4>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;">
+            <button type="button" class="btn-primary" onclick="window.AureliaApp.switchView('home')">Explore Suites &amp; Book Stay</button>
+            <button type="button" class="btn-secondary" onclick="window.AureliaApp.switchGuestTab('concierge')">Request VIP Concierge</button>
+            <button type="button" class="btn-secondary" onclick="window.AureliaApp.switchGuestTab('bookings')">Manage Reservations (${dash.reservations.length})</button>
+          </div>
+          ${dash.reservations.length === 0 ? `<p style="font-size:0.84rem;color:#64748b;">No reservations recorded yet.</p>` : dash.reservations.slice(0, 2).map((r) => `
+            <div style="border-top:1px solid #e2e8f0;padding-top:0.65rem;margin-top:0.65rem;font-size:0.83rem;display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <strong><code>${escapeHtml(r.booking_reference)}</code></strong> — ${(r.rooms || []).map((rm) => `#${escapeHtml(rm.room_number)} ${escapeHtml(rm.room_name)}`).join(', ')}<br/>
+                <span style="color:#64748b;">${escapeHtml(r.check_in)} &rarr; ${escapeHtml(r.check_out)} • $${Number(r.grandFolioTotal || r.total_amount).toFixed(2)} USD</span>
+              </div>
+              <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.openBookingInLookup('${escapeHtml(r.booking_reference)}', '${escapeHtml(r.guest_email)}')">Manage Dossier</button>
             </div>
-            <p style="font-size:0.84rem;color:var(--text-muted);margin:0.4rem 0;">
-              Rooms: ${(r.rooms || []).map((rm) => `#${escapeHtml(rm.room_number)} ${escapeHtml(rm.room_name)}`).join(', ')}<br/>
-              Total: <strong>$${Number(r.total_amount).toFixed(2)} USD</strong> • Paid: $${Number(r.amount_paid).toFixed(2)} USD
-            </p>
-            <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
-              <button type="button" class="btn-secondary" style="padding:0.35rem 0.75rem;font-size:0.78rem;" onclick="window.AureliaApp.openBookingInLookup('${escapeHtml(r.booking_reference)}', '${escapeHtml(r.guest_email)}')">
-                Inspect / Invoice
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderGuestBookingsTab(container, dash) {
+    if (!dash.reservations || dash.reservations.length === 0) {
+      container.innerHTML = `
+        <div class="kpi-card" style="text-align:center;padding:2.5rem;">
+          <h4 style="font-family:var(--font-serif);font-size:1.4rem;margin-bottom:0.5rem;">No Reservations Yet</h4>
+          <p style="font-size:0.88rem;color:#64748b;margin-bottom:1rem;">Reserve any suite to unlock your Digital Suite Key, Pre-Arrival Butler Dossier, and Michelin Dining time-slot reservations.</p>
+          <button type="button" class="btn-primary" onclick="window.AureliaApp.switchView('home')">Browse Suites &amp; Availability</button>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = `
+      <h4 style="font-family:var(--font-serif);font-size:1.4rem;margin-bottom:1rem;">Your Upcoming &amp; Historical Reservations (${dash.reservations.length})</h4>
+      ${dash.reservations.map((r) => `
+        <div class="kpi-card" style="margin-bottom:1.1rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.75rem;border-bottom:1px solid #e2e8f0;padding-bottom:0.75rem;margin-bottom:0.75rem;">
+            <div>
+              <span class="status-pill ${escapeHtml(r.status)}">${escapeHtml(r.status)}</span>
+              <span class="status-pill ${escapeHtml(r.payment_status)}" style="margin-left:0.35rem;">${escapeHtml(r.payment_status)}</span>
+              <strong style="font-size:1.1rem;margin-left:0.5rem;"><code>${escapeHtml(r.booking_reference)}</code></strong>
+              <span style="font-size:0.82rem;color:#64748b;margin-left:0.5rem;">${escapeHtml(r.check_in)} &rarr; ${escapeHtml(r.check_out)} (${r.nights} night(s))</span>
+            </div>
+            <div style="display:flex;gap:0.45rem;flex-wrap:wrap;">
+              <button type="button" class="btn-primary" style="padding:0.4rem 0.85rem;font-size:0.78rem;" onclick="window.AureliaApp.openBookingInLookup('${escapeHtml(r.booking_reference)}', '${escapeHtml(r.guest_email)}')">
+                🔑 Butler Dossier, Dining Slots &amp; Date Changes
               </button>
-              ${r.status === 'confirmed' ? `
-                <button type="button" class="btn-danger" style="padding:0.35rem 0.75rem;font-size:0.78rem;" onclick="window.AureliaApp.promptCancelReservation('${escapeHtml(r.booking_reference)}', '${escapeHtml(r.guest_email)}')">
+              <a href="/api/bookings/${encodeURIComponent(r.booking_reference)}/invoice?format=html" target="_blank" class="btn-secondary" style="padding:0.4rem 0.85rem;font-size:0.78rem;text-decoration:none;">
+                🖨️ Tax &amp; Folio Invoice
+              </a>
+              ${r.status !== 'cancelled' && r.status !== 'checked_out' ? `
+                <button type="button" class="btn-danger" style="padding:0.4rem 0.85rem;font-size:0.78rem;" onclick="window.AureliaApp.promptCancelReservation('${escapeHtml(r.booking_reference)}', '${escapeHtml(r.guest_email)}')">
                   Cancel Booking
                 </button>
               ` : ''}
             </div>
           </div>
-        `).join('');
-      }
 
-      const nList = document.getElementById('guestNotificationsList');
-      if (!notifData.notifications || notifData.notifications.length === 0) {
-        nList.innerHTML = `<div class="price-summary-card" style="position:static;"><p>No notifications dispatched yet.</p></div>`;
-      } else {
-        nList.innerHTML = notifData.notifications.map((n) => `
-          <div class="price-summary-card" style="position:static;margin-bottom:0.85rem;font-size:0.82rem;">
-            <div style="display:flex;justify-content:space-between;">
-              <strong>${escapeHtml(n.subject)}</strong>
-              <span class="staging-badge">${escapeHtml(n.template_code)}</span>
+          <div class="form-grid-3" style="font-size:0.83rem;">
+            <div>
+              <strong>Reserved Suite(s):</strong><br/>
+              ${(r.rooms || []).map((rm) => `#${escapeHtml(rm.room_number)} ${escapeHtml(rm.room_name)}`).join(', ')}
             </div>
-            <pre style="white-space:pre-wrap;font-family:var(--font-sans);margin-top:0.45rem;color:var(--text-muted);">${escapeHtml(n.body)}</pre>
+            <div>
+              <strong>Digital Key &amp; Butler Preferences:</strong><br/>
+              Key Pass: <code>${escapeHtml(r.preArrivalDossier?.digital_key_code || 'KEY-' + r.booking_reference)}</code><br/>
+              Pillow: ${escapeHtml(r.preArrivalDossier?.pillow_preference || 'Standard')} (${r.preArrivalDossier?.suite_temperature_c || 21}°C)
+            </div>
+            <div>
+              <strong>Financial Folio Summary:</strong><br/>
+              Stay Total: <strong>$${Number(r.total_amount).toFixed(2)} USD</strong>
+              ${r.incidentalTotal > 0 ? ` • In-Stay Folio: +$${Number(r.incidentalTotal).toFixed(2)}` : ''}<br/>
+              Amount Paid: $${Number(r.amount_paid).toFixed(2)} USD
+              ${r.loyalty_points_redeemed > 0 ? ` • Redeemed: ${r.loyalty_points_redeemed} pts (-$${Number(r.loyalty_discount_amount).toFixed(2)})` : ''}
+            </div>
           </div>
-        `).join('');
-      }
+        </div>
+      `).join('')}
+    `;
+  }
+
+  function renderGuestConciergeTab(container, dash) {
+    const requests = dash.conciergeRequests || [];
+    container.innerHTML = `
+      <div class="checkout-columns">
+        <div class="kpi-card">
+          <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.5rem;">Direct VIP Concierge &amp; Butler Request</h4>
+          <p style="font-size:0.82rem;color:#64748b;margin-bottom:0.85rem;">
+            Submit bespoke arrangements directly to our Head Concierge Desk — Rolls-Royce airport transfers, private helicopter arrival, sommelier cellar tastings, or in-suite amenities.
+          </p>
+          <form onsubmit="window.AureliaApp.handleCreateConciergeRequestSubmit(event)">
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label>Service Department</label>
+                <select id="concCategory">
+                  <option value="Chauffeur & Aviation">Rolls-Royce Chauffeur &amp; Helipad</option>
+                  <option value="Michelin Dining & Sommelier">Le Jardin d’Or &amp; Sommelier Cellar</option>
+                  <option value="Thermal Spa & Wellness">Thermal Sanctuary &amp; Private Hammam</option>
+                  <option value="Housekeeping & Butler">In-Suite Butler &amp; Housekeeping</option>
+                  <option value="Yacht & Lake Excursions">Private Riva Yacht Charter</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Link to Reservation (Optional)</label>
+                <select id="concBookingRef">
+                  <option value="">General Membership Request</option>
+                  ${(dash.reservations || []).map((r) => `<option value="${escapeHtml(r.booking_reference)}">${escapeHtml(r.booking_reference)} (${escapeHtml(r.check_in)})</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label>Priority Level</label>
+                <select id="concPriority">
+                  <option value="normal">Standard Privilege</option>
+                  <option value="vip_urgent">VIP Immediate Attention</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Preferred Date / Time</label>
+                <input type="text" id="concPrefTime" value="Upon Arrival at 15:30" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Request Subject *</label>
+              <input type="text" id="concSubject" placeholder="e.g. Rolls-Royce Phantom Pickup at Geneva Airport VIP Wing" required />
+            </div>
+            <div class="form-group">
+              <label>Detailed Instructions for Head Concierge *</label>
+              <textarea id="concDetails" rows="3" placeholder="Flight number, number of passengers, champagne preference..." required></textarea>
+            </div>
+            <button type="submit" class="btn-primary" style="width:100%;">Dispatch Request to Palace Concierge Desk</button>
+          </form>
+        </div>
+
+        <div>
+          <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.75rem;">Your Active &amp; Past Concierge Requests (${requests.length})</h4>
+          ${requests.length === 0 ? `<div class="kpi-card"><p style="font-size:0.84rem;color:#64748b;">You have not submitted any concierge service requests yet.</p></div>` : requests.map((cr) => `
+            <div class="kpi-card" style="margin-bottom:0.85rem;font-size:0.83rem;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
+                <strong><code>${escapeHtml(cr.request_reference)}</code> — ${escapeHtml(cr.subject)}</strong>
+                <span class="status-pill ${cr.status === 'fulfilled' ? 'confirmed' : cr.status === 'cancelled' ? 'cancelled' : 'checked_in'}">${escapeHtml(cr.status)}</span>
+              </div>
+              <div style="color:#64748b;font-size:0.76rem;margin-bottom:0.35rem;">
+                ${escapeHtml(cr.category)} • Priority: <strong>${escapeHtml(cr.priority)}</strong> ${cr.booking_reference ? `• Booking: <code>${escapeHtml(cr.booking_reference)}</code>` : ''}
+              </div>
+              <p style="color:#334155;margin-bottom:0.4rem;">${escapeHtml(cr.details)}</p>
+              ${cr.staff_notes ? `
+                <div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:0.5rem 0.75rem;border-radius:6px;color:#166534;font-size:0.79rem;">
+                  <strong>Concierge Desk Response (${escapeHtml(cr.handled_by || 'Head Concierge')}):</strong> ${escapeHtml(cr.staff_notes)}
+                </div>
+              ` : ''}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderGuestWaitlistTab(container, dash) {
+    const list = dash.waitlist || [];
+    container.innerHTML = `
+      <div class="kpi-card">
+        <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.5rem;">Your Priority Room Waitlist &amp; Automated Release Alerts (${list.length})</h4>
+        <p style="font-size:0.83rem;color:#64748b;margin-bottom:1rem;">
+          Whenever a suite you waitlisted is released by a cancellation, our engine immediately transitions your alert status to <strong>notified</strong> and dispatches an instant notification.
+        </p>
+        <div class="data-table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Waitlist Ref</th>
+                <th>Room / Suite</th>
+                <th>Requested Stay</th>
+                <th>Alert Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${list.length === 0 ? '<tr><td colspan="5">You have no active priority waitlist entries.</td></tr>' : list.map((w) => `
+                <tr>
+                  <td><code>${escapeHtml(w.waitlist_reference)}</code></td>
+                  <td>${w.room_number ? `<strong>#${escapeHtml(w.room_number)} ${escapeHtml(w.room_name || '')}</strong>` : escapeHtml(w.category_name || 'Any Suite')}</td>
+                  <td>${escapeHtml(w.check_in)} &rarr; ${escapeHtml(w.check_out)}</td>
+                  <td><span class="status-pill ${w.status === 'notified' ? 'confirmed' : w.status === 'cancelled' ? 'cancelled' : 'checked_in'}">${escapeHtml(w.status)}</span></td>
+                  <td>
+                    ${w.status === 'waiting' ? `<button type="button" class="nearby-date-btn" onclick="window.AureliaApp.cancelGuestWaitlistEntry(${w.id})">Remove</button>` : ''}
+                    ${w.status === 'notified' ? `<button type="button" class="nearby-date-btn" style="border-color:var(--emerald-ok);color:var(--emerald-ok);" onclick="window.AureliaApp.applySuggestedDates('${escapeHtml(w.check_in)}', '${escapeHtml(w.check_out)}'); window.AureliaApp.switchView('home');">Book Now</button>` : ''}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderGuestProfileTab(container, dash) {
+    const u = dash.user || state.currentUser;
+    const notifs = dash.notifications || [];
+    container.innerHTML = `
+      <div class="checkout-columns">
+        <div>
+          <div class="kpi-card" style="margin-bottom:1.25rem;">
+            <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.75rem;">Personal Profile &amp; Contact Preferences</h4>
+            <form onsubmit="window.AureliaApp.handleSaveGuestProfileSubmit(event)">
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label>First Name *</label>
+                  <input type="text" id="profFirstName" value="${escapeHtml(u.first_name)}" required />
+                </div>
+                <div class="form-group">
+                  <label>Last Name *</label>
+                  <input type="text" id="profLastName" value="${escapeHtml(u.last_name)}" required />
+                </div>
+              </div>
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label>Phone Number</label>
+                  <input type="tel" id="profPhone" value="${escapeHtml(u.phone || '')}" />
+                </div>
+                <div class="form-group">
+                  <label>Country / Residence</label>
+                  <input type="text" id="profCountry" value="${escapeHtml(u.country || '')}" />
+                </div>
+              </div>
+              <button type="submit" class="btn-primary" style="width:100%;">Save Profile Details</button>
+            </form>
+          </div>
+
+          <div class="kpi-card">
+            <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.75rem;">Account Password &amp; Security</h4>
+            <form onsubmit="window.AureliaApp.handleChangeGuestPasswordSubmit(event)">
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label>Current Password *</label>
+                  <input type="password" id="profCurrentPass" required />
+                </div>
+                <div class="form-group">
+                  <label>New Password (min. 8 chars) *</label>
+                  <input type="password" id="profNewPass" minlength="8" required />
+                </div>
+              </div>
+              <button type="submit" class="btn-secondary" style="width:100%;">Update Password</button>
+            </form>
+          </div>
+        </div>
+
+        <div>
+          <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.75rem;">Transactional &amp; Concierge Notification Inbox (${notifs.length})</h4>
+          ${notifs.length === 0 ? `<div class="kpi-card"><p style="font-size:0.84rem;color:#64748b;">No notifications dispatched yet.</p></div>` : notifs.map((n) => `
+            <div class="kpi-card" style="margin-bottom:0.75rem;font-size:0.82rem;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <strong>${escapeHtml(n.subject)}</strong>
+                <span class="staging-badge">${escapeHtml(n.template_code)}</span>
+              </div>
+              <pre style="white-space:pre-wrap;font-family:var(--font-sans);margin-top:0.4rem;color:#475569;">${escapeHtml(n.body)}</pre>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  async function handleCreateConciergeRequestSubmit(e) {
+    e.preventDefault();
+    try {
+      await apiFetch('/api/guest/concierge-requests', {
+        method: 'POST',
+        body: JSON.stringify({
+          category: document.getElementById('concCategory').value,
+          bookingReference: document.getElementById('concBookingRef').value,
+          priority: document.getElementById('concPriority').value,
+          preferredTime: document.getElementById('concPrefTime').value,
+          subject: document.getElementById('concSubject').value,
+          details: document.getElementById('concDetails').value
+        })
+      });
+      await renderGuestPortal();
     } catch (err) {
-      console.error(err);
+      alert(err.message);
+    }
+  }
+
+  async function cancelGuestWaitlistEntry(id) {
+    try {
+      await apiFetch(`/api/guest/waitlist/${id}`, { method: 'DELETE' });
+      await renderGuestPortal();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleSaveGuestProfileSubmit(e) {
+    e.preventDefault();
+    try {
+      const res = await apiFetch('/api/guest/profile', {
+        method: 'PUT',
+        body: JSON.stringify({
+          firstName: document.getElementById('profFirstName').value,
+          lastName: document.getElementById('profLastName').value,
+          phone: document.getElementById('profPhone').value,
+          country: document.getElementById('profCountry').value
+        })
+      });
+      state.currentUser = res.user;
+      alert('Profile updated successfully.');
+      await renderGuestPortal();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleChangeGuestPasswordSubmit(e) {
+    e.preventDefault();
+    try {
+      await apiFetch('/api/guest/password', {
+        method: 'PUT',
+        body: JSON.stringify({
+          currentPassword: document.getElementById('profCurrentPass').value,
+          newPassword: document.getElementById('profNewPass').value
+        })
+      });
+      alert('Password updated successfully.');
+      document.getElementById('profCurrentPass').value = '';
+      document.getElementById('profNewPass').value = '';
+    } catch (err) {
+      alert(err.message);
     }
   }
 
@@ -2104,6 +2484,8 @@
         await renderAdminCalendarTab(container);
       } else if (tabName === 'settings') {
         await renderAdminSettingsTab(container);
+      } else if (tabName === 'users') {
+        await renderAdminUsersTab(container);
       } else if (tabName === 'audit') {
         await renderAdminAuditTab(container);
       }
@@ -3378,6 +3760,302 @@ END:VCALENDAR</textarea>
     }
   }
 
+  async function renderAdminUsersTab(container) {
+    const [usersData, concData, payData] = await Promise.all([
+      apiFetch('/api/admin/users').catch(() => ({ users: [] })),
+      apiFetch('/api/admin/concierge-requests').catch(() => ({ conciergeRequests: [] })),
+      apiFetch('/api/admin/payments').catch(() => ({ payments: [] }))
+    ]);
+
+    const users = usersData.users || [];
+    const requests = concData.conciergeRequests || [];
+    const payments = payData.payments || [];
+
+    const totalGuests = users.filter((u) => u.role === 'guest').length;
+    const totalStaff = users.filter((u) => u.role !== 'guest').length;
+    const totalPoints = users.reduce((sum, u) => sum + Number(u.loyalty_points || 0), 0);
+    const pendingConcierge = requests.filter((r) => r.status === 'pending' || r.status === 'in_progress').length;
+
+    container.innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Registered Accounts</div>
+          <div class="kpi-value">${users.length}</div>
+          <div style="font-size:0.75rem;color:#64748b;">${totalGuests} VIP Guests • ${totalStaff} Staff Members</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Active Loyalty Pool</div>
+          <div class="kpi-value" style="color:var(--gold-primary);">${totalPoints.toLocaleString()} pts</div>
+          <div style="font-size:0.75rem;color:#64748b;">$${Math.floor(totalPoints / 10).toLocaleString()} USD redeemable value</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">VIP Concierge Queue</div>
+          <div class="kpi-value">${pendingConcierge}</div>
+          <div style="font-size:0.75rem;color:#64748b;">${requests.length} total concierge requests</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Payment Transactions</div>
+          <div class="kpi-value" style="color:var(--emerald-ok);">${payments.length}</div>
+          <div style="font-size:0.75rem;color:#64748b;">Tokenised Cards, Wires &amp; Refunds</div>
+        </div>
+      </div>
+
+      <!-- Create New User / Staff Account -->
+      <div class="kpi-card" style="margin-bottom:1.75rem;">
+        <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.65rem;">Create New User or Staff Account (Full RBAC &amp; Loyalty Provisioning)</h4>
+        <form onsubmit="window.AureliaApp.handleAdminCreateUserSubmit(event)" class="search-grid">
+          <div class="search-field">
+            <label>First Name *</label>
+            <input type="text" id="admNewFirst" placeholder="Lord Julian" required />
+          </div>
+          <div class="search-field">
+            <label>Last Name *</label>
+            <input type="text" id="admNewLast" placeholder="Vance" required />
+          </div>
+          <div class="search-field">
+            <label>Email Address *</label>
+            <input type="email" id="admNewEmail" placeholder="julian.vance@example.com" required />
+          </div>
+          <div class="search-field">
+            <label>Role (RBAC)</label>
+            <select id="admNewRole">
+              <option value="guest">guest (VIP Member)</option>
+              <option value="receptionist">receptionist (Front Desk)</option>
+              <option value="finance">finance (Folio &amp; Refunds)</option>
+              <option value="manager">manager (Operations)</option>
+              <option value="admin">admin (Full Access)</option>
+            </select>
+          </div>
+          <div class="search-field">
+            <label>Loyalty Tier</label>
+            <select id="admNewTier">
+              <option value="Aurélia Privé">Aurélia Privé</option>
+              <option value="Gold Sanctuary">Gold Sanctuary</option>
+              <option value="Imperial Black">Imperial Black</option>
+            </select>
+          </div>
+          <div class="search-field">
+            <label>Initial Loyalty Points</label>
+            <input type="number" id="admNewPoints" value="2500" min="0" required />
+          </div>
+          <div class="search-field">
+            <label>Password *</label>
+            <input type="password" id="admNewPass" value="AureliaVIP!2026" minlength="8" required />
+          </div>
+          <div class="search-field">
+            <button type="submit" class="btn-primary" style="width:100%;">+ Create Account</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Full User & Staff Directory with Inline Editing -->
+      <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.65rem;">Users &amp; Staff Directory — Inline Role, Tier, Loyalty Points &amp; Status Management (${users.length})</h4>
+      <div class="data-table-wrapper" style="margin-bottom:2rem;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>ID &amp; Name</th>
+              <th>Email &amp; Country</th>
+              <th>Stays &amp; Spend</th>
+              <th>RBAC Role</th>
+              <th>Loyalty Tier</th>
+              <th>Loyalty Points</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${users.map((u) => `
+              <tr>
+                <td><strong>#${u.id} ${escapeHtml(u.first_name)} ${escapeHtml(u.last_name)}</strong></td>
+                <td>
+                  ${escapeHtml(u.email)}<br/>
+                  <span style="font-size:0.74rem;color:#64748b;">${escapeHtml(u.phone || '')} • ${escapeHtml(u.country || 'Switzerland')}</span>
+                </td>
+                <td>
+                  <strong>${u.total_bookings || 0} stay(s)</strong><br/>
+                  <span style="font-size:0.75rem;color:var(--emerald-ok);">$${Number(u.lifetime_spend_usd || 0).toLocaleString()} USD</span>
+                </td>
+                <td>
+                  <select id="admUserRole_${u.id}" style="padding:0.25rem;font-size:0.78rem;">
+                    ${['guest', 'receptionist', 'finance', 'manager', 'admin'].map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${r}</option>`).join('')}
+                  </select>
+                </td>
+                <td>
+                  <select id="admUserTier_${u.id}" style="padding:0.25rem;font-size:0.78rem;">
+                    ${['Aurélia Privé', 'Gold Sanctuary', 'Imperial Black'].map((t) => `<option value="${t}" ${u.loyalty_tier === t ? 'selected' : ''}>${t}</option>`).join('')}
+                  </select>
+                </td>
+                <td>
+                  <input type="number" id="admUserPts_${u.id}" value="${u.loyalty_points}" style="width:90px;padding:0.25rem;font-size:0.78rem;" />
+                </td>
+                <td>
+                  <select id="admUserActive_${u.id}" style="padding:0.25rem;font-size:0.78rem;">
+                    <option value="1" ${u.is_active ? 'selected' : ''}>Active</option>
+                    <option value="0" ${!u.is_active ? 'selected' : ''}>Suspended</option>
+                  </select>
+                </td>
+                <td>
+                  <div style="display:flex;gap:0.35rem;">
+                    <button type="button" class="nearby-date-btn" style="border-color:var(--emerald-ok);color:var(--emerald-ok);" onclick="window.AureliaApp.handleAdminSaveUserRow(${u.id})">Save</button>
+                    ${state.currentUser && state.currentUser.id !== u.id ? `
+                      <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.handleAdminDeleteUser(${u.id})">Delete</button>
+                    ` : ''}
+                  </div>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- VIP Guest Concierge Service Desk Queue -->
+      <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.65rem;">VIP Guest Concierge Service Desk Queue (${requests.length})</h4>
+      <div class="data-table-wrapper" style="margin-bottom:2rem;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Ref &amp; Priority</th>
+              <th>Guest &amp; Booking</th>
+              <th>Department &amp; Subject</th>
+              <th>Status</th>
+              <th>Concierge Response Note to Guest</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${requests.length === 0 ? '<tr><td colspan="6">No guest concierge service requests submitted yet.</td></tr>' : requests.map((cr) => `
+              <tr>
+                <td>
+                  <code>${escapeHtml(cr.request_reference)}</code><br/>
+                  <span class="status-pill ${cr.priority === 'vip_urgent' ? 'cancelled' : 'checked_in'}">${escapeHtml(cr.priority)}</span>
+                </td>
+                <td>
+                  <strong>${escapeHtml(cr.guest_name)}</strong><br/>
+                  <span style="font-size:0.74rem;color:#64748b;">${escapeHtml(cr.guest_email)} ${cr.booking_reference ? `• <code>${escapeHtml(cr.booking_reference)}</code>` : ''}</span>
+                </td>
+                <td>
+                  <strong>${escapeHtml(cr.subject)}</strong><br/>
+                  <span style="font-size:0.75rem;color:#475569;">${escapeHtml(cr.category)} • ${escapeHtml(cr.details)}</span>
+                </td>
+                <td>
+                  <select id="admConcStatus_${cr.id}" style="padding:0.25rem;font-size:0.78rem;">
+                    ${['pending', 'in_progress', 'fulfilled', 'cancelled'].map((st) => `<option value="${st}" ${cr.status === st ? 'selected' : ''}>${st}</option>`).join('')}
+                  </select>
+                </td>
+                <td>
+                  <input type="text" id="admConcNotes_${cr.id}" value="${escapeHtml(cr.staff_notes || 'Arranged by Head Concierge Desk')}" style="width:100%;padding:0.25rem;font-size:0.78rem;" />
+                </td>
+                <td>
+                  <button type="button" class="nearby-date-btn" style="border-color:var(--emerald-ok);color:var(--emerald-ok);" onclick="window.AureliaApp.handleAdminUpdateConciergeRequest(${cr.id})">
+                    Update &amp; Notify
+                  </button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Financial Payment & Refund Transactions Ledger -->
+      <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.65rem;">Financial Payment &amp; Refund Transactions Ledger (${payments.length})</h4>
+      <div class="data-table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Payment Ref &amp; Invoice</th>
+              <th>Booking Ref</th>
+              <th>Guest</th>
+              <th>Method &amp; Type</th>
+              <th>Amount (USD)</th>
+              <th>Status &amp; Timestamp</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${payments.length === 0 ? '<tr><td colspan="6">No payment transactions recorded yet.</td></tr>' : payments.map((p) => `
+              <tr>
+                <td>
+                  <code>${escapeHtml(p.payment_reference)}</code><br/>
+                  <span style="font-size:0.74rem;color:#64748b;">${escapeHtml(p.invoice_number)}</span>
+                </td>
+                <td><code>${escapeHtml(p.booking_reference)}</code></td>
+                <td>${escapeHtml(p.guest_first_name || '')} ${escapeHtml(p.guest_last_name || '')}</td>
+                <td>${escapeHtml(p.payment_method.toUpperCase())} (${escapeHtml(p.payment_type)})</td>
+                <td><strong style="color:${p.amount < 0 ? 'var(--crimson-err)' : 'var(--emerald-ok)'};">$${Number(p.amount).toFixed(2)} USD</strong></td>
+                <td>
+                  <span class="status-pill ${escapeHtml(p.status)}">${escapeHtml(p.status)}</span>
+                  <div style="font-size:0.72rem;color:#64748b;margin-top:0.15rem;">${escapeHtml(p.created_at)}</div>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  async function handleAdminCreateUserSubmit(e) {
+    e.preventDefault();
+    try {
+      await apiFetch('/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          firstName: document.getElementById('admNewFirst').value,
+          lastName: document.getElementById('admNewLast').value,
+          email: document.getElementById('admNewEmail').value,
+          role: document.getElementById('admNewRole').value,
+          loyaltyTier: document.getElementById('admNewTier').value,
+          loyaltyPoints: Number(document.getElementById('admNewPoints').value),
+          password: document.getElementById('admNewPass').value
+        })
+      });
+      await loadAdminTab('users');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleAdminSaveUserRow(userId) {
+    try {
+      await apiFetch(`/api/admin/users/${userId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          role: document.getElementById(`admUserRole_${userId}`).value,
+          loyaltyTier: document.getElementById(`admUserTier_${userId}`).value,
+          loyaltyPoints: Number(document.getElementById(`admUserPts_${userId}`).value),
+          isActive: document.getElementById(`admUserActive_${userId}`).value === '1'
+        })
+      });
+      await loadAdminTab('users');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleAdminDeleteUser(userId) {
+    try {
+      await apiFetch(`/api/admin/users/${userId}`, { method: 'DELETE' });
+      await loadAdminTab('users');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleAdminUpdateConciergeRequest(id) {
+    try {
+      await apiFetch(`/api/admin/concierge-requests/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status: document.getElementById(`admConcStatus_${id}`).value,
+          staffNotes: document.getElementById(`admConcNotes_${id}`).value
+        })
+      });
+      await loadAdminTab('users');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   async function triggerAdminDatabaseBackup() {
     try {
       const res = await apiFetch('/api/admin/backup', { method: 'POST' });
@@ -3437,6 +4115,12 @@ END:VCALENDAR</textarea>
     handleLoginSubmit,
     handleRegisterSubmit,
     logout,
+    quickGuestLogin,
+    switchGuestTab,
+    handleCreateConciergeRequestSubmit,
+    cancelGuestWaitlistEntry,
+    handleSaveGuestProfileSubmit,
+    handleChangeGuestPasswordSubmit,
     quickStaffLogin,
     switchAdminTab,
     handleAdminWalkInSubmit,
@@ -3461,6 +4145,10 @@ END:VCALENDAR</textarea>
     updateStaffRoleUI,
     saveNotificationTemplateUI,
     verifyCloudAdapterHandshake,
+    handleAdminCreateUserSubmit,
+    handleAdminSaveUserRow,
+    handleAdminDeleteUser,
+    handleAdminUpdateConciergeRequest,
     triggerAdminDatabaseBackup
   };
 

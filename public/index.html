@@ -388,9 +388,11 @@
           <button type="submit" class="btn-primary" style="width:100%;">Sign In</button>
         </form>
         <div style="margin-top:1rem;padding-top:0.75rem;border-top:1px dashed var(--border-subtle);font-size:0.78rem;color:var(--text-muted);">
-          <strong>Quick Demo Accounts:</strong><br />
-          VIP Guest: <code>elena.rostova@example.com</code> / <code>GuestPass!2026</code><br />
-          Hotel Admin: <code>admin@maisonaurelia.luxury</code> / <code>AureliaAdmin!2026</code>
+          <strong>One-Click Demo Account Sign-In:</strong>
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.45rem;">
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.quickGuestLogin('elena.rostova@example.com', 'GuestPass!2026')">VIP Guest (Elena Rostova)</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.quickGuestLogin('admin@maisonaurelia.luxury', 'AureliaAdmin!2026')">Hotel Admin (Henri de Valois)</button>
+          </div>
         </div>
       </div>
 
@@ -431,25 +433,31 @@
       </div>
     </div>
 
-    <!-- Authenticated Guest Dashboard -->
+    <!-- Authenticated Multi-Tab User & Guest Privé Dashboard -->
     <div id="portalAuthenticatedDashboard" class="hidden">
-      <div class="multi-room-tray" style="margin-bottom:2rem;">
-        <div>
-          <span class="staging-badge" id="guestLoyaltyBadge">Imperial Black</span>
-          <strong id="guestWelcomeName" style="font-size:1.1rem;"></strong>
-          <span id="guestLoyaltyPoints" style="color:var(--gold-bright);margin-left:0.75rem;font-size:0.9rem;"></span>
+      <div class="admin-shell">
+        <div class="admin-topbar">
+          <div>
+            <span class="staging-badge" id="guestLoyaltyBadge">Imperial Black</span>
+            <h3 id="guestWelcomeName" style="font-family:var(--font-serif);font-size:1.45rem;display:inline-block;vertical-align:middle;margin-left:0.4rem;"></h3>
+            <p id="guestLoyaltyPoints" style="color:var(--gold-bright);font-size:0.85rem;margin-top:0.2rem;"></p>
+          </div>
+          <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+            <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('home')">+ Book New Suite</button>
+            <button type="button" class="btn-secondary" style="color:#fff;border-color:rgba(255,255,255,0.4);padding:0.4rem 0.9rem;font-size:0.8rem;" onclick="window.AureliaApp.logout()">Sign Out</button>
+          </div>
         </div>
-        <button type="button" class="btn-secondary" style="color:#fff;border-color:rgba(255,255,255,0.4);" onclick="window.AureliaApp.logout()">Sign Out</button>
-      </div>
 
-      <div class="checkout-columns">
-        <div>
-          <h3 style="font-family:var(--font-serif);font-size:1.6rem;margin-bottom:1rem;">Your Upcoming &amp; Past Reservations</h3>
-          <div id="guestBookingsList"></div>
+        <div class="admin-tabs" role="tablist">
+          <button type="button" class="admin-tab-btn guest-tab-btn active" onclick="window.AureliaApp.switchGuestTab('overview', this)">1. Loyalty Wallet &amp; Stay KPIs</button>
+          <button type="button" class="admin-tab-btn guest-tab-btn" onclick="window.AureliaApp.switchGuestTab('bookings', this)">2. My Reservations, Keys &amp; Invoices</button>
+          <button type="button" class="admin-tab-btn guest-tab-btn" onclick="window.AureliaApp.switchGuestTab('concierge', this)">3. VIP Concierge Service Desk</button>
+          <button type="button" class="admin-tab-btn guest-tab-btn" onclick="window.AureliaApp.switchGuestTab('waitlist', this)">4. Priority Waitlist &amp; Alerts</button>
+          <button type="button" class="admin-tab-btn guest-tab-btn" onclick="window.AureliaApp.switchGuestTab('profile', this)">5. Profile, Security &amp; Inbox</button>
         </div>
-        <div>
-          <h3 style="font-family:var(--font-serif);font-size:1.6rem;margin-bottom:1rem;">Concierge &amp; Receipt Notifications</h3>
-          <div id="guestNotificationsList"></div>
+
+        <div id="guestPortalTabContent" class="admin-content">
+          <!-- Rendered dynamically by window.AureliaApp -->
         </div>
       </div>
     </div>
@@ -485,7 +493,8 @@
         <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('rooms', this)">3. Rooms &amp; Categories CRUD</button>
         <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('calendar', this)">4. Calendar &amp; Maintenance Blocks</button>
         <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('settings', this)">5. Rates, Promos, Taxes &amp; Policies</button>
-        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('audit', this)">6. Staff RBAC, Audit Trail &amp; Backups</button>
+        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('users', this)">6. Users, Staff &amp; Concierge Desk</button>
+        <button type="button" class="admin-tab-btn" onclick="window.AureliaApp.switchAdminTab('audit', this)">7. Audit Trail, Templates &amp; Backups</button>
       </div>
 
       <div id="adminTabContent" class="admin-content">

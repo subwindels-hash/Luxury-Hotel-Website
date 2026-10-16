@@ -904,6 +904,219 @@ router.get('/guest/notifications', requireAuth, (req, res) => {
   res.json({ notifications });
 });
 
+router.get('/guest/dashboard', requireAuth, (req, res) => {
+  const db = getDb();
+  const freshUser = db.prepare(`
+    SELECT id, email, first_name, last_name, phone, country, role, loyalty_tier, loyalty_points, is_active, created_at
+    FROM users WHERE id = ?
+  `).get(req.user.id);
+
+  const refRows = db.prepare(`
+    SELECT booking_reference
+    FROM reservations
+    WHERE user_id = ? OR LOWER(guest_email) = LOWER(?)
+    ORDER BY id DESC
+  `).all(req.user.id, req.user.email);
+
+  const reservations = refRows.map((r) => getReservationByReference(r.booking_reference)).filter(Boolean);
+  const activeStays = reservations.filter((r) => r.status !== 'cancelled');
+  const today = new Date().toISOString().slice(0, 10);
+  const upcomingStays = activeStays.filter((r) => r.check_out >= today);
+  const totalNights = activeStays.reduce((sum, r) => sum + Number(r.nights || 0), 0);
+  const lifetimeSpendUsd = roundMoney(
+    activeStays.reduce((sum, r) => sum + Number(r.grandFolioTotal || r.total_amount || 0), 0)
+  );
+
+  const pts = Number(freshUser?.loyalty_points || 0);
+  const redeemableCreditUsd = roundMoney(Math.floor(pts / 10));
+  let nextTier = 'Imperial Black';
+  let pointsToNextTier = 0;
+  if (pts < 5000) {
+    nextTier = 'Gold Sanctuary';
+    pointsToNextTier = 5000 - pts;
+  } else if (pts < 15000) {
+    nextTier = 'Imperial Black';
+    pointsToNextTier = 15000 - pts;
+  }
+
+  const waitlist = db.prepare(`
+    SELECT w.*, r.room_number, r.name AS room_name, c.name AS category_name
+    FROM waitlist_entries w
+    LEFT JOIN rooms r ON r.id = w.room_id
+    LEFT JOIN room_categories c ON c.id = w.category_id
+    WHERE LOWER(w.guest_email) = LOWER(?)
+    ORDER BY w.id DESC
+  `).all(req.user.email);
+
+  const conciergeRequests = db.prepare(`
+    SELECT * FROM concierge_requests
+    WHERE user_id = ? OR LOWER(guest_email) = LOWER(?)
+    ORDER BY id DESC
+  `).all(req.user.id, req.user.email);
+
+  const notifications = db.prepare(`
+    SELECT * FROM notifications
+    WHERE user_id = ? OR LOWER(recipient_email) = LOWER(?)
+    ORDER BY id DESC LIMIT 40
+  `).all(req.user.id, req.user.email);
+
+  res.json({
+    user: freshUser,
+    metrics: {
+      totalStays: activeStays.length,
+      upcomingStaysCount: upcomingStays.length,
+      totalNights,
+      lifetimeSpendUsd,
+      loyaltyPoints: pts,
+      redeemableCreditUsd,
+      loyaltyTier: freshUser?.loyalty_tier || 'Aurélia Privé',
+      nextTier,
+      pointsToNextTier
+    },
+    reservations,
+    waitlist,
+    conciergeRequests,
+    notifications
+  });
+});
+
+router.put('/guest/profile', requireAuth, (req, res) => {
+  const { firstName, lastName, phone = '', country = '' } = req.body;
+  if (!firstName || !lastName) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'First name and last name are required.' });
+  }
+  const db = getDb();
+  db.prepare(`
+    UPDATE users
+    SET first_name = ?, last_name = ?, phone = ?, country = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(String(firstName).trim(), String(lastName).trim(), String(phone).trim(), String(country).trim(), req.user.id);
+
+  const updated = db.prepare(`
+    SELECT id, email, first_name, last_name, phone, country, role, loyalty_tier, loyalty_points, is_active, created_at
+    FROM users WHERE id = ?
+  `).get(req.user.id);
+
+  logAudit({
+    eventType: 'GUEST_PROFILE_UPDATED',
+    entityType: 'user',
+    entityId: String(req.user.id),
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `User ${req.user.email} updated their profile details.`,
+    ipAddress: req.ip
+  });
+
+  res.json({ user: updated });
+});
+
+router.put('/guest/password', requireAuth, (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword || String(newPassword).length < 8) {
+    return res.status(400).json({
+      error: 'INVALID_PASSWORD_INPUT',
+      message: 'Current password and a new password of at least 8 characters are required.'
+    });
+  }
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!row || !verifyPassword(currentPassword, row.password_salt, row.password_hash)) {
+    return res.status(401).json({ error: 'INVALID_CURRENT_PASSWORD', message: 'Current password is incorrect.' });
+  }
+
+  const { salt, hash } = hashPassword(newPassword);
+  db.prepare("UPDATE users SET password_hash = ?, password_salt = ?, updated_at = datetime('now') WHERE id = ?").run(
+    hash,
+    salt,
+    req.user.id
+  );
+
+  logAudit({
+    eventType: 'USER_PASSWORD_CHANGED',
+    entityType: 'user',
+    entityId: String(req.user.id),
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `User ${req.user.email} updated their account password.`,
+    ipAddress: req.ip
+  });
+
+  res.json({ updated: true });
+});
+
+router.delete('/guest/waitlist/:id', requireAuth, (req, res) => {
+  const db = getDb();
+  const entry = db.prepare('SELECT * FROM waitlist_entries WHERE id = ?').get(Number(req.params.id));
+  if (!entry || entry.guest_email.toLowerCase() !== req.user.email.toLowerCase()) {
+    return res.status(404).json({ error: 'WAITLIST_NOT_FOUND', message: 'Waitlist entry not found.' });
+  }
+  db.prepare("UPDATE waitlist_entries SET status = 'cancelled' WHERE id = ?").run(entry.id);
+  res.json({ cancelled: true });
+});
+
+router.get('/guest/concierge-requests', requireAuth, (req, res) => {
+  const db = getDb();
+  const requests = db.prepare(`
+    SELECT * FROM concierge_requests
+    WHERE user_id = ? OR LOWER(guest_email) = LOWER(?)
+    ORDER BY id DESC
+  `).all(req.user.id, req.user.email);
+  res.json({ conciergeRequests: requests });
+});
+
+router.post('/guest/concierge-requests', requireAuth, (req, res) => {
+  const {
+    bookingReference = '',
+    category = 'Chauffeur & Transport',
+    priority = 'normal',
+    subject,
+    details,
+    preferredTime = ''
+  } = req.body;
+
+  if (!subject || !details) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Subject and request details are required.' });
+  }
+
+  const db = getDb();
+  const ref = `CON-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  const validPriority = priority === 'vip_urgent' ? 'vip_urgent' : 'normal';
+  const result = db.prepare(`
+    INSERT INTO concierge_requests (
+      request_reference, user_id, booking_reference, guest_name, guest_email,
+      category, priority, subject, details, preferred_time, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+  `).run(
+    ref,
+    req.user.id,
+    String(bookingReference || '').trim(),
+    `${req.user.first_name} ${req.user.last_name}`,
+    req.user.email,
+    String(category).trim(),
+    validPriority,
+    String(subject).trim(),
+    String(details).trim(),
+    String(preferredTime || '').trim()
+  );
+
+  const created = db.prepare('SELECT * FROM concierge_requests WHERE id = ?').get(Number(result.lastInsertRowid));
+
+  logAudit({
+    eventType: 'CONCIERGE_REQUEST_CREATED',
+    entityType: 'concierge_request',
+    entityId: ref,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Guest ${req.user.email} submitted concierge request ${ref} (${created.category}: ${created.subject}).`,
+    ipAddress: req.ip
+  });
+
+  res.status(201).json({ conciergeRequest: created });
+});
+
 // ---------------------------------------------------------------------------
 // 5. Hotel Administration Dashboard Endpoints (Protected by RBAC)
 // ---------------------------------------------------------------------------
@@ -1967,14 +2180,246 @@ router.put('/admin/settings', requireRoles('finance', 'manager', 'admin'), (req,
   res.json({ settings: updated });
 });
 
-// Staff & Users Management (Admin only)
+// Staff & Users Management (Admin & Manager)
 router.get('/admin/users', requireRoles('manager', 'admin'), (req, res) => {
   const db = getDb();
-  const users = db.prepare(`
-    SELECT id, email, first_name, last_name, phone, country, role, loyalty_tier, loyalty_points, is_active, created_at
-    FROM users ORDER BY id ASC
-  `).all();
+  let sql = `
+    SELECT
+      u.id, u.email, u.first_name, u.last_name, u.phone, u.country,
+      u.role, u.loyalty_tier, u.loyalty_points, u.is_active, u.created_at,
+      COUNT(r.id) AS total_bookings,
+      COALESCE(SUM(CASE WHEN r.status != 'cancelled' THEN r.total_amount ELSE 0 END), 0) AS lifetime_spend_usd
+    FROM users u
+    LEFT JOIN reservations r ON (r.user_id = u.id OR LOWER(r.guest_email) = LOWER(u.email))
+    WHERE 1=1
+  `;
+  const params = [];
+  if (req.query.role && req.query.role !== 'all') {
+    sql += ' AND u.role = ?';
+    params.push(req.query.role);
+  }
+  if (req.query.search) {
+    const q = `%${req.query.search}%`;
+    sql += ' AND (u.email LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ?)';
+    params.push(q, q, q);
+  }
+  sql += ' GROUP BY u.id ORDER BY u.id ASC';
+
+  const users = db.prepare(sql).all(...params);
   res.json({ users });
+});
+
+router.post('/admin/users', requireRoles('admin'), (req, res) => {
+  const {
+    email,
+    password = 'AureliaUser!2026',
+    firstName,
+    lastName,
+    phone = '',
+    country = 'Switzerland',
+    role = 'guest',
+    loyaltyTier = 'Aurélia Privé',
+    loyaltyPoints = 1000
+  } = req.body;
+
+  if (!email || !firstName || !lastName) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'email, firstName, and lastName are required.' });
+  }
+  const validRoles = ['guest', 'receptionist', 'finance', 'manager', 'admin'];
+  if (!validRoles.includes(role)) {
+    return res.status(400).json({ error: 'INVALID_ROLE', message: 'Invalid role specified.' });
+  }
+
+  const db = getDb();
+  const cleanEmail = String(email).trim().toLowerCase();
+  if (db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(cleanEmail)) {
+    return res.status(409).json({ error: 'EMAIL_ALREADY_EXISTS', message: 'A user with that email already exists.' });
+  }
+
+  const { salt, hash } = hashPassword(String(password));
+  const result = db.prepare(`
+    INSERT INTO users (
+      email, password_hash, password_salt, first_name, last_name,
+      phone, country, role, loyalty_tier, loyalty_points, is_active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `).run(
+    cleanEmail,
+    hash,
+    salt,
+    String(firstName).trim(),
+    String(lastName).trim(),
+    String(phone).trim(),
+    String(country).trim(),
+    role,
+    String(loyaltyTier).trim(),
+    Number(loyaltyPoints || 0)
+  );
+
+  const created = db.prepare(`
+    SELECT id, email, first_name, last_name, phone, country, role, loyalty_tier, loyalty_points, is_active, created_at
+    FROM users WHERE id = ?
+  `).get(Number(result.lastInsertRowid));
+
+  logAudit({
+    eventType: 'ADMIN_USER_CREATED',
+    entityType: 'user',
+    entityId: String(created.id),
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Admin created user ${created.email} with role ${created.role} (${created.loyalty_tier}, ${created.loyalty_points} pts).`,
+    ipAddress: req.ip
+  });
+
+  res.status(201).json({ user: created });
+});
+
+router.put('/admin/users/:id', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const targetId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
+  if (!existing) {
+    return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User not found.' });
+  }
+
+  const {
+    firstName = existing.first_name,
+    lastName = existing.last_name,
+    phone = existing.phone,
+    country = existing.country,
+    role = existing.role,
+    loyaltyTier = existing.loyalty_tier,
+    loyaltyPoints = existing.loyalty_points,
+    isActive = Boolean(existing.is_active)
+  } = req.body;
+
+  // Only full admin can change RBAC roles
+  const finalRole = req.user.role === 'admin' ? role : existing.role;
+
+  db.prepare(`
+    UPDATE users
+    SET first_name = ?, last_name = ?, phone = ?, country = ?,
+        role = ?, loyalty_tier = ?, loyalty_points = ?, is_active = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    String(firstName).trim(),
+    String(lastName).trim(),
+    String(phone).trim(),
+    String(country).trim(),
+    finalRole,
+    String(loyaltyTier).trim(),
+    Math.max(0, Number(loyaltyPoints || 0)),
+    isActive ? 1 : 0,
+    targetId
+  );
+
+  const updated = db.prepare(`
+    SELECT id, email, first_name, last_name, phone, country, role, loyalty_tier, loyalty_points, is_active, created_at
+    FROM users WHERE id = ?
+  `).get(targetId);
+
+  logAudit({
+    eventType: 'ADMIN_USER_UPDATED',
+    entityType: 'user',
+    entityId: String(targetId),
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Updated user ${updated.email} (Role: ${updated.role}, Tier: ${updated.loyalty_tier}, Points: ${updated.loyalty_points}, Active: ${updated.is_active}).`,
+    ipAddress: req.ip
+  });
+
+  res.json({ user: updated });
+});
+
+router.delete('/admin/users/:id', requireRoles('admin'), (req, res) => {
+  const targetId = Number(req.params.id);
+  if (targetId === req.user.id) {
+    return res.status(400).json({ error: 'CANNOT_DELETE_SELF', message: 'You cannot delete your own active admin account.' });
+  }
+  const db = getDb();
+  const existing = db.prepare('SELECT email FROM users WHERE id = ?').get(targetId);
+  if (!existing) {
+    return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User not found.' });
+  }
+  db.prepare('DELETE FROM users WHERE id = ?').run(targetId);
+  logAudit({
+    eventType: 'ADMIN_USER_DELETED',
+    entityType: 'user',
+    entityId: String(targetId),
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Deleted user account ${existing.email} (ID ${targetId}).`,
+    ipAddress: req.ip
+  });
+  res.json({ deleted: true });
+});
+
+// Admin VIP Concierge Service Desk Endpoints
+router.get('/admin/concierge-requests', requireRoles('receptionist', 'manager', 'admin'), (_req, res) => {
+  const db = getDb();
+  const requests = db.prepare('SELECT * FROM concierge_requests ORDER BY id DESC LIMIT 100').all();
+  res.json({ conciergeRequests: requests });
+});
+
+router.patch('/admin/concierge-requests/:id', requireRoles('receptionist', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM concierge_requests WHERE id = ?').get(id);
+  if (!existing) {
+    return res.status(404).json({ error: 'REQUEST_NOT_FOUND', message: 'Concierge request not found.' });
+  }
+
+  const validStatuses = ['pending', 'in_progress', 'fulfilled', 'cancelled'];
+  const newStatus = validStatuses.includes(req.body.status) ? req.body.status : existing.status;
+  const staffNotes = req.body.staffNotes !== undefined ? String(req.body.staffNotes).trim() : existing.staff_notes;
+  const handledBy = `${req.user.first_name} ${req.user.last_name} (${req.user.role})`;
+
+  db.prepare(`
+    UPDATE concierge_requests
+    SET status = ?, staff_notes = ?, handled_by = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(newStatus, staffNotes, handledBy, id);
+
+  const updated = db.prepare('SELECT * FROM concierge_requests WHERE id = ?').get(id);
+
+  db.prepare(`
+    INSERT INTO notifications (
+      user_id, recipient_email, channel, template_code, subject, body, status
+    ) VALUES (?, ?, 'email', 'CONCIERGE_UPDATE', ?, ?, 'sent')
+  `).run(
+    existing.user_id || null,
+    existing.guest_email,
+    `Maison Aurélia Concierge Desk Update — ${existing.request_reference} (${newStatus.toUpperCase()})`,
+    `Dear ${existing.guest_name}, your concierge request "${existing.subject}" (${existing.request_reference}) is now ${newStatus.toUpperCase()}. Concierge Notes: ${staffNotes || 'Arranged with pleasure by our Palace Concierge Desk.'}`
+  );
+
+  logAudit({
+    eventType: 'CONCIERGE_REQUEST_UPDATED',
+    entityType: 'concierge_request',
+    entityId: existing.request_reference,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Updated concierge request ${existing.request_reference} to ${newStatus}.`,
+    ipAddress: req.ip
+  });
+
+  res.json({ conciergeRequest: updated });
+});
+
+// Admin Financial Payments & Refunds Ledger
+router.get('/admin/payments', requireRoles('finance', 'manager', 'admin'), (_req, res) => {
+  const db = getDb();
+  const payments = db.prepare(`
+    SELECT p.*, r.guest_first_name, r.guest_last_name, r.guest_email
+    FROM payments p
+    LEFT JOIN reservations r ON r.id = p.reservation_id
+    ORDER BY p.id DESC LIMIT 100
+  `).all();
+  res.json({ payments });
 });
 
 router.patch('/admin/users/:id/role', requireRoles('admin'), (req, res) => {
