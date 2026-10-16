@@ -3073,4 +3073,207 @@ router.delete('/admin/messages/:threadId', requireRoles('manager', 'admin'), (re
   res.json({ deleted: true });
 });
 
+// ---------------------------------------------------------------------------
+// 7. Public Contact Page & Interactive Map Inquiry -> Admin Messaging Inbox
+// ---------------------------------------------------------------------------
+
+// Public / Guest: Submit a Contact Page message directly into the Admin Messaging Inbox
+router.post('/contact/messages', (req, res) => {
+  const {
+    guestName,
+    guestEmail,
+    guestPhone = '',
+    bookingReference = '',
+    department = 'Head Concierge & Admin',
+    priority = 'normal',
+    subject,
+    message,
+    mapPoint = ''
+  } = req.body;
+
+  const resolvedEmail = String(guestEmail || (req.user && req.user.email) || '').trim().toLowerCase();
+  const resolvedName = String(
+    guestName || (req.user ? `${req.user.first_name} ${req.user.last_name}` : '')
+  ).trim();
+
+  if (!resolvedName || !resolvedEmail || !subject || !message) {
+    return res.status(400).json({
+      error: 'MISSING_CONTACT_FIELDS',
+      message: 'Full Name, Email Address, Subject, and Message are required.'
+    });
+  }
+
+  const db = getDb();
+  const matchedUser = req.user
+    ? { id: req.user.id, first_name: req.user.first_name, last_name: req.user.last_name }
+    : db.prepare('SELECT id, first_name, last_name FROM users WHERE LOWER(email) = ?').get(resolvedEmail);
+
+  const threadRef = `MSG-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  const validPriority = priority === 'vip_urgent' ? 'vip_urgent' : 'normal';
+  const cleanSubject = String(subject).trim();
+  const cleanDepartment = String(department || 'Head Concierge & Admin').trim();
+  const cleanBookingRef = String(bookingReference || '').trim();
+
+  const metaLines = [];
+  if (guestPhone && String(guestPhone).trim()) {
+    metaLines.push(`Phone: ${String(guestPhone).trim()}`);
+  }
+  if (mapPoint && String(mapPoint).trim()) {
+    metaLines.push(`Map Landmark / Arrival Point: ${String(mapPoint).trim()}`);
+  }
+  const formattedBody = metaLines.length > 0
+    ? `[Contact Page Inquiry • ${metaLines.join(' | ')}]\n\n${String(message).trim()}`
+    : String(message).trim();
+
+  const tRes = db.prepare(`
+    INSERT INTO message_threads (
+      thread_reference, user_id, guest_name, guest_email, booking_reference,
+      department, subject, status, priority, unread_by_admin, unread_by_guest,
+      last_message_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_staff', ?, 1, 0, datetime('now'), datetime('now'))
+  `).run(
+    threadRef,
+    matchedUser ? matchedUser.id : null,
+    resolvedName,
+    resolvedEmail,
+    cleanBookingRef,
+    cleanDepartment,
+    cleanSubject,
+    validPriority
+  );
+
+  const threadId = Number(tRes.lastInsertRowid);
+  db.prepare(`
+    INSERT INTO thread_messages (
+      thread_id, sender_user_id, sender_role, sender_name, sender_email, body, is_read
+    ) VALUES (?, ?, 'guest', ?, ?, ?, 0)
+  `).run(
+    threadId,
+    matchedUser ? matchedUser.id : null,
+    resolvedName,
+    resolvedEmail,
+    formattedBody
+  );
+
+  // Record confirmation notification
+  db.prepare(`
+    INSERT INTO notifications (
+      user_id, recipient_email, channel, template_code, subject, body, status
+    ) VALUES (?, ?, 'email', 'CONTACT_PAGE_INQUIRY', ?, ?, 'sent')
+  `).run(
+    matchedUser ? matchedUser.id : null,
+    resolvedEmail,
+    `We Have Received Your Inquiry [${threadRef}] — ${cleanSubject}`,
+    `Dear ${resolvedName},\n\nThank you for contacting Maison Aurélia (${cleanDepartment}). Your message has been routed directly to our Admin & Concierge Inbox under reference ${threadRef}.`
+  );
+
+  logAudit({
+    eventType: 'CONTACT_PAGE_MESSAGE_RECEIVED',
+    entityType: 'message_thread',
+    entityId: threadRef,
+    actorId: matchedUser ? matchedUser.id : null,
+    actorRole: req.user ? req.user.role : 'guest',
+    actorEmail: resolvedEmail,
+    summary: `Contact Page message ${threadRef} from ${resolvedName} (${resolvedEmail}) routed to Admin Inbox: "${cleanSubject}".`,
+    ipAddress: req.ip
+  });
+
+  broadcastFrontDeskEvent({
+    type: 'MESSAGE_RECEIVED_FROM_GUEST',
+    title: `New Contact Page Message (${threadRef})`,
+    message: `${resolvedName} (${cleanDepartment}): "${cleanSubject}"`
+  });
+
+  const thread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(threadId);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(threadId);
+
+  res.status(201).json({ thread: { ...thread, messages } });
+});
+
+// Public / Guest: Lookup a Contact Page thread by threadReference + email
+router.get('/contact/messages/lookup', (req, res) => {
+  const threadReference = String(req.query.threadReference || '').trim().toUpperCase();
+  const email = String(req.query.email || '').trim().toLowerCase();
+
+  if (!threadReference || !email) {
+    return res.status(400).json({
+      error: 'MISSING_LOOKUP_PARAMS',
+      message: 'Both threadReference (e.g. MSG-XXXXXX) and email are required.'
+    });
+  }
+
+  const db = getDb();
+  const thread = db.prepare(
+    'SELECT * FROM message_threads WHERE UPPER(thread_reference) = ? AND LOWER(guest_email) = ?'
+  ).get(threadReference, email);
+
+  if (!thread) {
+    return res.status(404).json({
+      error: 'THREAD_NOT_FOUND',
+      message: 'No message thread found matching that Reference and Email Address.'
+    });
+  }
+
+  db.prepare('UPDATE message_threads SET unread_by_guest = 0 WHERE id = ?').run(thread.id);
+  db.prepare("UPDATE thread_messages SET is_read = 1 WHERE thread_id = ? AND sender_role != 'guest'").run(thread.id);
+
+  const updatedThread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(thread.id);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(thread.id);
+
+  res.json({ thread: { ...updatedThread, messages } });
+});
+
+// Public / Guest: Reply to a thread from the Contact Page using threadReference + email
+router.post('/contact/messages/:threadReference/reply', (req, res) => {
+  const threadReference = String(req.params.threadReference || '').trim().toUpperCase();
+  const email = String(req.body.email || (req.user && req.user.email) || '').trim().toLowerCase();
+  const body = String(req.body.body || '').trim();
+
+  if (!threadReference || !email || !body) {
+    return res.status(400).json({
+      error: 'MISSING_FIELDS',
+      message: 'threadReference, email, and reply body are required.'
+    });
+  }
+
+  const db = getDb();
+  const thread = db.prepare(
+    'SELECT * FROM message_threads WHERE UPPER(thread_reference) = ? AND LOWER(guest_email) = ?'
+  ).get(threadReference, email);
+
+  if (!thread) {
+    return res.status(404).json({
+      error: 'THREAD_NOT_FOUND',
+      message: 'Conversation thread not found for that reference and email.'
+    });
+  }
+
+  db.prepare(`
+    INSERT INTO thread_messages (
+      thread_id, sender_user_id, sender_role, sender_name, sender_email, body, is_read
+    ) VALUES (?, ?, 'guest', ?, ?, ?, 0)
+  `).run(thread.id, thread.user_id || null, thread.guest_name, thread.guest_email, body);
+
+  db.prepare(`
+    UPDATE message_threads
+    SET status = 'awaiting_staff',
+        unread_by_admin = unread_by_admin + 1,
+        unread_by_guest = 0,
+        last_message_at = datetime('now'),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(thread.id);
+
+  broadcastFrontDeskEvent({
+    type: 'MESSAGE_RECEIVED_FROM_GUEST',
+    title: `Contact Thread Reply (${thread.thread_reference})`,
+    message: `${thread.guest_name} replied in "${thread.subject}"`
+  });
+
+  const updatedThread = db.prepare('SELECT * FROM message_threads WHERE id = ?').get(thread.id);
+  const messages = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY id ASC').all(thread.id);
+
+  res.status(201).json({ thread: { ...updatedThread, messages } });
+});
+
 module.exports = router;

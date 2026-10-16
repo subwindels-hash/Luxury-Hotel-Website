@@ -1354,4 +1354,71 @@ describe('Maison Aurélia Luxury Hotel & Online Reservation Platform — End-to-
     });
     assert.equal(delThread.status, 200);
   });
+
+  it('22. Routes Contact Page messages with Map Landmark metadata directly into the Admin Messaging Inbox and supports replies', async () => {
+    const adminLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'admin@maisonaurelia.luxury',
+      password: 'AureliaAdmin!2026'
+    });
+    const adminToken = adminLogin.data.token;
+
+    // 1. Visitor / Guest submits a message from the Contact Page with a selected map landmark
+    const contactSubmit = await reqJson('POST', '/api/contact/messages', {
+      guestName: 'Lord Julian Sterling',
+      guestEmail: 'julian.sterling@example.com',
+      guestPhone: '+44 20 7946 0192',
+      bookingReference: '',
+      department: 'Private Aviation & Chauffeur',
+      priority: 'vip_urgent',
+      mapPoint: 'Maison Aurélia Sky Crown Helipad H1 (46.2088° N, 6.1502° E)',
+      subject: 'Rooftop Helipad H1 Landing Slot & Presidential Suite Viewing',
+      message: 'Arriving by helicopter from Zurich at 15:00. Please arrange rooftop security reception.'
+    });
+    assert.equal(contactSubmit.status, 201);
+    assert.ok(contactSubmit.data.thread.thread_reference.startsWith('MSG-'));
+    assert.equal(contactSubmit.data.thread.unread_by_admin, 1);
+    assert.ok(contactSubmit.data.thread.messages[0].body.includes('Helipad H1'));
+
+    const threadId = contactSubmit.data.thread.id;
+    const threadRef = contactSubmit.data.thread.thread_reference;
+
+    // 2. Verify the Contact Page message immediately appears in the Admin Messaging Inbox
+    const adminInbox = await reqJson('GET', '/api/admin/messages', null, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(adminInbox.status, 200);
+    const inAdmin = adminInbox.data.threads.find((t) => t.id === threadId);
+    assert.ok(inAdmin, 'Contact Page thread must appear in Admin Messaging Inbox');
+    assert.equal(inAdmin.unread_by_admin, 1);
+
+    // 3. Admin replies to the Contact Page message from the Admin Inbox
+    const adminReply = await reqJson(
+      'POST',
+      `/api/admin/messages/${threadId}/reply`,
+      {
+        body: 'Dear Lord Sterling, Helipad H1 (ICAO: LSMA) is cleared for your 15:00 arrival and our Palace Director awaits.',
+        status: 'awaiting_guest'
+      },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(adminReply.status, 201);
+    assert.equal(adminReply.data.thread.unread_by_guest, 1);
+
+    // 4. Visitor looks up the thread on the Contact Page and sends a follow-up reply back to Admin Inbox
+    const lookupRes = await reqJson(
+      'GET',
+      `/api/contact/messages/lookup?threadReference=${encodeURIComponent(threadRef)}&email=julian.sterling@example.com`
+    );
+    assert.equal(lookupRes.status, 200);
+    assert.equal(lookupRes.data.thread.messages.length, 2);
+    assert.equal(lookupRes.data.thread.unread_by_guest, 0);
+
+    const followUp = await reqJson('POST', `/api/contact/messages/${threadRef}/reply`, {
+      email: 'julian.sterling@example.com',
+      body: 'Thank you, tail number G-AURE. See you at 15:00.'
+    });
+    assert.equal(followUp.status, 201);
+    assert.equal(followUp.data.thread.unread_by_admin, 1);
+    assert.equal(followUp.data.thread.messages.length, 3);
+  });
 });

@@ -248,7 +248,7 @@
   }
 
   function switchView(viewName) {
-    ['home', 'lookup', 'portal', 'admin'].forEach((v) => {
+    ['home', 'contact', 'lookup', 'portal', 'admin'].forEach((v) => {
       const el = document.getElementById(`view-${v}`);
       if (el) el.classList.toggle('hidden', v !== viewName);
     });
@@ -259,7 +259,9 @@
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    if (viewName === 'portal') {
+    if (viewName === 'contact') {
+      initContactPage();
+    } else if (viewName === 'portal') {
       renderGuestPortal();
     } else if (viewName === 'admin') {
       ensureStaffForAdminAndLoad();
@@ -4598,12 +4600,359 @@ END:VCALENDAR</textarea>
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Contact Page Interactive Map & Direct-to-Admin-Inbox Messaging
+  // -------------------------------------------------------------------------
+
+  const CONTACT_MAP_PINS = {
+    palace: {
+      badge: 'PALACE FLAGSHIP COORDINATES',
+      title: 'Maison Aurélia Grand Palace & Sanctuary',
+      coords: '46.2085° N, 6.1496° E',
+      desc: '18 Quai du Mont-Blanc, 1201 Geneva, Switzerland. Private gated courtyard with 24/7 Rolls-Royce valet reception, underground armoured garage, and direct waterfront promenade access.',
+      transfer: 'Rolls-Royce Chauffeur Standby: Immediate On-Site',
+      department: 'Head Concierge & Admin',
+      defaultSubject: 'General Palace Inquiry & VIP Concierge Assistance'
+    },
+    airport: {
+      badge: 'PRIVATE AVIATION & VIP TARMAC',
+      title: 'Geneva International Airport (GVA) VIP Terminal',
+      coords: '46.2381° N, 6.1089° E',
+      desc: 'Direct tarmac meet-and-greet at Geneva Executive Aviation & Commercial VIP Wing. Customs & luggage handled privately by our Diplomatic Attaché before boarding our Rolls-Royce Phantom VIII.',
+      transfer: 'Rolls-Royce Phantom VIII Transfer Time: 15 Minutes (6.8 km)',
+      department: 'Private Aviation & Chauffeur',
+      defaultSubject: 'Rolls-Royce Airport Tarmac Pickup Request (GVA)'
+    },
+    helipad: {
+      badge: 'ROOFTOP HELIPAD H1 (ICAO: LSMA)',
+      title: 'Maison Aurélia Sky Crown Helipad H1',
+      coords: '46.2088° N, 6.1502° E',
+      desc: 'Certified twin-turbine rooftop helipad atop the 9th-floor Sky Crown wing for direct alpine transfers from Courchevel, Gstaad, Zermatt, and Zurich.',
+      transfer: 'Private Security Lift Direct to Presidential & Penthouse Suites: 90 Seconds',
+      department: 'Private Aviation & Chauffeur',
+      defaultSubject: 'Rooftop Helipad H1 Landing Slot & Alpine Transfer Clearance'
+    },
+    pier: {
+      badge: 'LAKE GENEVA PRIVATE MARINA',
+      title: 'Maison Aurélia Private Yacht Pier #4',
+      coords: '46.2076° N, 6.1498° E',
+      desc: 'Exclusive Riva Aquarama & private tender mooring directly across the Quai du Mont-Blanc promenade, with private champagne embarkation.',
+      transfer: 'Private Escort from Palace Courtyard to Yacht Pier #4: 2 Minutes',
+      department: 'Head Concierge & Admin',
+      defaultSubject: 'Private Yacht Pier #4 Mooring & Riva Lake Charter Inquiry'
+    },
+    rail: {
+      badge: 'INTERNATIONAL HIGH-SPEED RAIL HUB',
+      title: 'Geneva Cornavin Grand Rail Terminal',
+      coords: '46.2102° N, 6.1424° E',
+      desc: 'First-class platform porter & chauffeur reception for TGV Lyria and Swiss Federal Railways arrivals.',
+      transfer: 'Rolls-Royce Phantom VIII Transfer Time: 6 Minutes (1.4 km)',
+      department: 'Private Aviation & Chauffeur',
+      defaultSubject: 'Cornavin Rail Terminal Chauffeur & Luggage Escort'
+    }
+  };
+
+  let currentContactMapPinKey = 'palace';
+
+  function initContactPage() {
+    const nameEl = document.getElementById('contactGuestName');
+    const emailEl = document.getElementById('contactGuestEmail');
+    const phoneEl = document.getElementById('contactGuestPhone');
+
+    if (state.currentUser) {
+      if (nameEl && !nameEl.value) {
+        nameEl.value = `${state.currentUser.first_name || ''} ${state.currentUser.last_name || ''}`.trim();
+      }
+      if (emailEl && !emailEl.value) {
+        emailEl.value = state.currentUser.email || '';
+      }
+      if (phoneEl && !phoneEl.value && state.currentUser.phone) {
+        phoneEl.value = state.currentUser.phone;
+      }
+    } else {
+      if (nameEl && !nameEl.value) nameEl.value = 'Elena Rostova';
+      if (emailEl && !emailEl.value) emailEl.value = 'elena.rostova@example.com';
+      if (phoneEl && !phoneEl.value) phoneEl.value = '+41 79 555 0192';
+    }
+  }
+
+  function setContactMapMode(mode) {
+    document.querySelectorAll('.contact-map-mode-btn').forEach((btn) => {
+      const isMatch = btn.getAttribute('data-mode') === mode;
+      btn.style.background = isMatch ? 'rgba(212,175,99,0.22)' : 'rgba(255,255,255,0.06)';
+      btn.style.color = isMatch ? 'var(--gold-bright)' : '#e2e8f0';
+      btn.style.borderColor = isMatch ? 'var(--gold-primary)' : '#334155';
+    });
+
+    const routeLine = document.getElementById('mapRouteCorridorLine');
+    if (mode === 'aviation') {
+      if (routeLine) routeLine.setAttribute('d', 'M85,52 Q165,85 215,130 L350,155 L435,128');
+      selectContactMapPin('airport');
+    } else if (mode === 'marina') {
+      if (routeLine) routeLine.setAttribute('d', 'M350,155 L350,238 L545,255');
+      selectContactMapPin('pier');
+    } else {
+      if (routeLine) routeLine.setAttribute('d', 'M215,130 L350,155');
+      selectContactMapPin('palace');
+    }
+  }
+
+  function selectContactMapPin(pinKey) {
+    const pin = CONTACT_MAP_PINS[pinKey] || CONTACT_MAP_PINS.palace;
+    currentContactMapPinKey = pinKey in CONTACT_MAP_PINS ? pinKey : 'palace';
+
+    const badgeEl = document.getElementById('contactPinBadge');
+    const titleEl = document.getElementById('contactPinTitle');
+    const coordsEl = document.getElementById('contactPinCoords');
+    const descEl = document.getElementById('contactPinDesc');
+    const transferEl = document.getElementById('contactPinTransferTime');
+    const mapPointInput = document.getElementById('contactMapPoint');
+
+    if (badgeEl) badgeEl.textContent = pin.badge;
+    if (titleEl) titleEl.textContent = pin.title;
+    if (coordsEl) coordsEl.textContent = pin.coords;
+    if (descEl) descEl.textContent = pin.desc;
+    if (transferEl) transferEl.textContent = pin.transfer;
+    if (mapPointInput) mapPointInput.value = `${pin.title} (${pin.coords})`;
+  }
+
+  function applyMapPinToContactForm() {
+    const pin = CONTACT_MAP_PINS[currentContactMapPinKey] || CONTACT_MAP_PINS.palace;
+    const mapPointInput = document.getElementById('contactMapPoint');
+    const deptSelect = document.getElementById('contactDepartment');
+    const subjInput = document.getElementById('contactSubject');
+    const bodyInput = document.getElementById('contactMessageBody');
+
+    if (mapPointInput) mapPointInput.value = `${pin.title} (${pin.coords})`;
+    if (deptSelect) deptSelect.value = pin.department;
+    if (subjInput && !subjInput.value) subjInput.value = pin.defaultSubject;
+    if (bodyInput) {
+      if (!bodyInput.value) {
+        bodyInput.value = `Bonjour Concierge Team, I would like to arrange assistance regarding ${pin.title} (${pin.coords}). Please confirm availability and scheduling details.`;
+      }
+      bodyInput.focus();
+    }
+  }
+
+  function fillContactPreset(presetKey) {
+    const deptSelect = document.getElementById('contactDepartment');
+    const prioSelect = document.getElementById('contactPriority');
+    const subjInput = document.getElementById('contactSubject');
+    const bodyInput = document.getElementById('contactMessageBody');
+
+    if (presetKey === 'airport') {
+      selectContactMapPin('airport');
+      if (deptSelect) deptSelect.value = 'Private Aviation & Chauffeur';
+      if (prioSelect) prioSelect.value = 'vip_urgent';
+      if (subjInput) subjInput.value = 'Rolls-Royce Phantom VIII Airport Tarmac Pickup (Flight LX-2804)';
+      if (bodyInput) {
+        bodyInput.value = 'We are arriving at Geneva International Airport (GVA) VIP Terminal at 16:30. Please dispatch the Rolls-Royce Phantom VIII chauffeur and arrange direct suite check-in.';
+      }
+    } else if (presetKey === 'viewing') {
+      selectContactMapPin('palace');
+      if (deptSelect) deptSelect.value = 'Head Concierge & Admin';
+      if (prioSelect) prioSelect.value = 'normal';
+      if (subjInput) subjInput.value = 'Private Architectural Viewing of The Imperial Presidential Suite (#701)';
+      if (bodyInput) {
+        bodyInput.value = 'I would like to schedule a private viewing of The Imperial Presidential Residence (#701) and Sky Penthouse (#PH-01) with the Palace Director this Friday afternoon.';
+      }
+    } else if (presetKey === 'dining') {
+      selectContactMapPin('palace');
+      if (deptSelect) deptSelect.value = 'Dining & Thermal Sanctuary';
+      if (prioSelect) prioSelect.value = 'normal';
+      if (subjInput) subjInput.value = "Private Sommelier Cellar & 2★ Michelin Chef's Table Inquiry";
+      if (bodyInput) {
+        bodyInput.value = "Could you reserve the Chef's Table at L'Orangerie du Lac for 4 guests this Saturday at 20:00, paired with your vintage Krug & Grand Cru Burgundy tasting flight?";
+      }
+    } else if (presetKey === 'helipad') {
+      selectContactMapPin('helipad');
+      if (deptSelect) deptSelect.value = 'Private Aviation & Chauffeur';
+      if (prioSelect) prioSelect.value = 'vip_urgent';
+      if (subjInput) subjInput.value = 'Rooftop Helipad H1 (ICAO: LSMA) Landing Clearance Request';
+      if (bodyInput) {
+        bodyInput.value = 'Requesting landing slot clearance on Rooftop Helipad H1 for our AgustaWestland AW139 helicopter departing Gstaad at 14:15 tomorrow.';
+      }
+    }
+  }
+
+  async function handleContactPageSubmit(e) {
+    e.preventDefault();
+    const guestName = document.getElementById('contactGuestName').value.trim();
+    const guestEmail = document.getElementById('contactGuestEmail').value.trim();
+    const guestPhone = document.getElementById('contactGuestPhone').value.trim();
+    const bookingReference = document.getElementById('contactBookingRef').value.trim();
+    const department = document.getElementById('contactDepartment').value;
+    const priority = document.getElementById('contactPriority').value;
+    const mapPoint = document.getElementById('contactMapPoint').value.trim();
+    const subject = document.getElementById('contactSubject').value.trim();
+    const message = document.getElementById('contactMessageBody').value.trim();
+
+    try {
+      const res = await apiFetch('/api/contact/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          guestName,
+          guestEmail,
+          guestPhone,
+          bookingReference,
+          department,
+          priority,
+          mapPoint,
+          subject,
+          message
+        })
+      });
+
+      const thread = res.thread;
+      state.selectedAdminThreadId = thread.id;
+      state.selectedGuestThreadId = thread.id;
+
+      // Clear subject & message body after sending
+      document.getElementById('contactSubject').value = '';
+      document.getElementById('contactMessageBody').value = '';
+
+      // Populate lookup fields automatically so the user can also track right below
+      const lookupRefEl = document.getElementById('contactLookupRef');
+      const lookupEmailEl = document.getElementById('contactLookupEmail');
+      if (lookupRefEl) lookupRefEl.value = thread.thread_reference;
+      if (lookupEmailEl) lookupEmailEl.value = thread.guest_email;
+
+      const resultBox = document.getElementById('contactSubmissionResultBox');
+      if (resultBox) {
+        resultBox.classList.remove('hidden');
+        resultBox.innerHTML = `
+          <div class="availability-box is-available" style="margin-top:0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+              <div class="availability-box-heading" style="margin-bottom:0;">
+                ✓ Message Delivered to Admin Messaging Inbox (<code>${escapeHtml(thread.thread_reference)}</code>)
+              </div>
+              <span class="status-pill confirmed">UNREAD IN ADMIN INBOX</span>
+            </div>
+            <p style="font-size:0.83rem;margin:0.45rem 0;">
+              Your inquiry <strong>"${escapeHtml(thread.subject)}"</strong> for <strong>${escapeHtml(thread.department)}</strong> has been routed directly to the <strong>Admin Messaging Inbox</strong>.
+            </p>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.65rem;">
+              <button type="button" class="btn-primary" style="padding:0.45rem 0.9rem;font-size:0.78rem;" onclick="window.AureliaApp.openThreadInAdminInbox(${thread.id})">
+                💬 Open This Message in Admin Inbox Now (${escapeHtml(thread.thread_reference)}) &rarr;
+              </button>
+              <button type="button" class="btn-secondary" style="padding:0.45rem 0.9rem;font-size:0.78rem;" onclick="window.AureliaApp.switchToGuestMessagingInbox()">
+                👤 View in My Guest Inbox
+              </button>
+            </div>
+          </div>
+        `;
+      }
+
+      renderContactThreadConversation(thread);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function openThreadInAdminInbox(threadId) {
+    state.selectedAdminThreadId = Number(threadId);
+    await switchToAdminMessagingInbox();
+  }
+
+  async function handleContactThreadLookup(e) {
+    if (e) e.preventDefault();
+    const ref = document.getElementById('contactLookupRef').value.trim();
+    const email = document.getElementById('contactLookupEmail').value.trim();
+
+    try {
+      const res = await apiFetch(
+        `/api/contact/messages/lookup?threadReference=${encodeURIComponent(ref)}&email=${encodeURIComponent(email)}`
+      );
+      renderContactThreadConversation(res.thread);
+    } catch (err) {
+      const box = document.getElementById('contactThreadLookupResult');
+      if (box) {
+        box.innerHTML = `
+          <div class="availability-box is-unavailable" style="margin-top:0;">
+            <div class="availability-box-heading">Thread Lookup Notice</div>
+            <p style="font-size:0.82rem;">${escapeHtml(err.message)}</p>
+          </div>
+        `;
+      }
+    }
+  }
+
+  function renderContactThreadConversation(thread) {
+    const box = document.getElementById('contactThreadLookupResult');
+    if (!box || !thread) return;
+
+    box.innerHTML = `
+      <div style="border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:0.95rem;background:#faf8f5;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:0.5rem;padding-bottom:0.65rem;border-bottom:1px solid var(--border-subtle);margin-bottom:0.75rem;">
+          <div>
+            <span class="staging-badge" style="background:#0f172a;color:var(--gold-bright);">${escapeHtml(thread.thread_reference)}</span>
+            <strong style="font-size:0.95rem;margin-left:0.35rem;">${escapeHtml(thread.subject)}</strong>
+            <div style="font-size:0.76rem;color:var(--text-muted);margin-top:0.2rem;">
+              Department: <strong>${escapeHtml(thread.department)}</strong> • Status: <span class="status-pill ${thread.status === 'resolved' ? 'confirmed' : 'pending'}">${escapeHtml(thread.status)}</span>
+            </div>
+          </div>
+          <button type="button" class="nearby-date-btn" style="font-size:0.74rem;" onclick="window.AureliaApp.openThreadInAdminInbox(${thread.id})">
+            Reply as Admin in Admin Console &rarr;
+          </button>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:0.65rem;max-height:280px;overflow-y:auto;margin-bottom:0.8rem;padding-right:0.25rem;">
+          ${(thread.messages || []).map((m) => {
+            const isGuest = m.sender_role === 'guest';
+            return `
+              <div style="align-self:${isGuest ? 'flex-end' : 'flex-start'};max-width:88%;background:${isGuest ? '#1e293b' : '#ffffff'};color:${isGuest ? '#f8fafc' : 'var(--text-primary)'};border:1px solid ${isGuest ? '#334155' : 'var(--gold-primary)'};border-radius:var(--radius-sm);padding:0.65rem 0.85rem;">
+                <div style="display:flex;justify-content:space-between;gap:0.75rem;font-size:0.72rem;margin-bottom:0.25rem;color:${isGuest ? 'var(--gold-bright)' : 'var(--gold-primary)'};font-weight:700;">
+                  <span>${escapeHtml(m.sender_name)} (${isGuest ? 'Guest' : 'Admin / Concierge'})</span>
+                  <span style="opacity:0.8;font-weight:400;">${escapeHtml(m.created_at || '')}</span>
+                </div>
+                <div style="font-size:0.83rem;line-height:1.45;white-space:pre-wrap;">${escapeHtml(m.body)}</div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+
+        <form onsubmit="window.AureliaApp.handleContactThreadReplySubmit(event, '${escapeHtml(thread.thread_reference)}', '${escapeHtml(thread.guest_email)}')">
+          <div style="display:flex;gap:0.5rem;">
+            <input type="text" id="contactInlineReplyInput" placeholder="Write a follow-up reply to Admin..." required style="flex:1;padding:0.55rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);font-size:0.83rem;" />
+            <button type="submit" class="btn-primary" style="padding:0.55rem 0.95rem;font-size:0.8rem;">Send Reply</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  async function handleContactThreadReplySubmit(e, threadReference, email) {
+    e.preventDefault();
+    const input = document.getElementById('contactInlineReplyInput');
+    const body = input ? input.value.trim() : '';
+    if (!body) return;
+
+    try {
+      const res = await apiFetch(`/api/contact/messages/${encodeURIComponent(threadReference)}/reply`, {
+        method: 'POST',
+        body: JSON.stringify({ email, body })
+      });
+      renderContactThreadConversation(res.thread);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   window.AureliaApp = {
     init,
     setLanguage,
     setCurrency,
     switchView,
     scrollToSection,
+    initContactPage,
+    setContactMapMode,
+    selectContactMapPin,
+    applyMapPinToContactForm,
+    fillContactPreset,
+    handleContactPageSubmit,
+    openThreadInAdminInbox,
+    handleContactThreadLookup,
+    handleContactThreadReplySubmit,
     handleSearchSubmit,
     filterByCategory,
     applySuggestedDates,

@@ -34,6 +34,7 @@
         <button type="button" class="nav-link active" data-view="home" data-i18n="nav_rooms" onclick="window.AureliaApp.switchView('home')">Suites &amp; Rooms</button>
         <button type="button" class="nav-link" onclick="window.AureliaApp.scrollToSection('visualizer3dSection')" data-i18n="nav_visualizer">3D Suite Explorer</button>
         <button type="button" class="nav-link" onclick="window.AureliaApp.scrollToSection('experiencesSection')" data-i18n="nav_experiences">Dining &amp; Sanctuary</button>
+        <button type="button" class="nav-link" data-view="contact" data-i18n="nav_contact" onclick="window.AureliaApp.switchView('contact')">📍 Contact &amp; Map</button>
         <button type="button" class="nav-link" data-view="lookup" data-i18n="nav_lookup" onclick="window.AureliaApp.switchView('lookup')">My Booking</button>
         <button type="button" class="nav-link" data-view="portal" data-i18n="nav_portal" onclick="window.AureliaApp.switchView('portal')">Guest Privé</button>
         <button type="button" class="nav-link" onclick="window.AureliaApp.openMessagingInboxDirect()">💬 Messages Inbox</button>
@@ -325,10 +326,329 @@
               <text x="245" y="165" text-anchor="middle" fill="#93c5fd" font-size="11" letter-spacing="2">LAKEFRONT &amp; PRIVATE MARINA PIER</text>
             </svg>
           </div>
+          <div style="margin-top:0.9rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <button type="button" class="btn-primary" style="flex:1;padding:0.55rem 0.9rem;font-size:0.82rem;" onclick="window.AureliaApp.switchView('contact')">
+              📍 Open Contact Page, Interactive Map &amp; Message Admin &rarr;
+            </button>
+          </div>
         </div>
       </div>
     </div>
   </main>
+
+  <!-- ===================================================================== -->
+  <!-- VIEW 2A: CONTACT PAGE WITH INTERACTIVE MAP & DIRECT ADMIN INBOX FORM  -->
+  <!-- ===================================================================== -->
+  <section id="view-contact" class="container hidden" style="padding-top:2.5rem;padding-bottom:4rem;">
+    <div class="section-header" style="margin-top:0;display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:1rem;">
+      <div>
+        <span class="section-eyebrow">WATERFRONT SANCTUARY QUARTER • 18 QUAI DU MONT-BLANC, GENEVA</span>
+        <h2 class="section-title" style="margin-bottom:0.35rem;">Contact Maison Aurélia &amp; Interactive Palace Map</h2>
+        <p style="color:var(--text-muted);font-size:0.95rem;max-width:760px;">
+          Explore our Lakefront Sanctuary coordinates, private yacht pier, and helipad routes on the interactive map below, or send a message directly into our <strong>Admin &amp; Head Concierge Messaging Inbox</strong>.
+        </p>
+      </div>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.switchToAdminMessagingInbox()">
+          💬 View Admin Messaging Inbox &rarr;
+        </button>
+        <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.switchToGuestMessagingInbox()">
+          👤 Open My Guest Inbox
+        </button>
+      </div>
+    </div>
+
+    <!-- Main 2-Column Contact Layout: Interactive Map + Direct-to-Admin-Inbox Form -->
+    <div class="checkout-columns" style="align-items:start;margin-bottom:2.5rem;">
+      <!-- LEFT COLUMN: Interactive Multi-Layer Map, Clickable Pins & Palace Directory -->
+      <div style="display:flex;flex-direction:column;gap:1.5rem;">
+        <div class="price-summary-card" style="position:static;background:var(--bg-obsidian);color:var(--text-light);">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.75rem;">
+            <div>
+              <span class="section-eyebrow" style="margin-bottom:0.15rem;">INTERACTIVE PALACE CARTOGRAPHY &amp; ARRIVAL CORRIDORS</span>
+              <h3 style="font-family:var(--font-serif);font-size:1.5rem;color:var(--gold-bright);">Lake Geneva Waterfront &amp; Sanctuary Map</h3>
+            </div>
+            <span class="status-pill confirmed" style="font-size:0.72rem;">GPS: 46.2085° N, 6.1496° E</span>
+          </div>
+
+          <!-- Map Layer / Corridor Switcher -->
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.85rem;">
+            <button type="button" class="nearby-date-btn contact-map-mode-btn" data-mode="palace" onclick="window.AureliaApp.setContactMapMode('palace')" style="background:rgba(212,175,99,0.22);color:var(--gold-bright);border-color:var(--gold-primary);">
+              1. Palace &amp; Lakefront Quarter
+            </button>
+            <button type="button" class="nearby-date-btn contact-map-mode-btn" data-mode="aviation" onclick="window.AureliaApp.setContactMapMode('aviation')" style="background:rgba(255,255,255,0.06);color:#e2e8f0;border-color:#334155;">
+              2. Airport &amp; Helipad Route
+            </button>
+            <button type="button" class="nearby-date-btn contact-map-mode-btn" data-mode="marina" onclick="window.AureliaApp.setContactMapMode('marina')" style="background:rgba(255,255,255,0.06);color:#e2e8f0;border-color:#334155;">
+              3. Private Yacht Pier &amp; Landmarks
+            </button>
+          </div>
+
+          <!-- Interactive SVG Map with Clickable Landmarks -->
+          <div style="border:1px solid var(--border-dark);border-radius:var(--radius-sm);overflow:hidden;background:#0b1325;position:relative;">
+            <svg id="contactInteractiveSvgMap" viewBox="0 0 680 340" style="width:100%;height:auto;display:block;cursor:pointer;" aria-label="Interactive Map of Maison Aurélia Geneva">
+              <defs>
+                <linearGradient id="lakeWaterGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#0f294a" />
+                  <stop offset="100%" stop-color="#1e3a5f" />
+                </linearGradient>
+                <radialGradient id="palaceGlow" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="rgba(212,175,99,0.45)" />
+                  <stop offset="100%" stop-color="rgba(212,175,99,0)" />
+                </radialGradient>
+              </defs>
+
+              <!-- Landmass & Grid -->
+              <rect width="680" height="340" fill="#0b1325" />
+              <g stroke="#1e293b" stroke-width="1">
+                <line x1="0" y1="60" x2="680" y2="60" />
+                <line x1="0" y1="120" x2="680" y2="120" />
+                <line x1="0" y1="180" x2="680" y2="180" />
+                <line x1="120" y1="0" x2="120" y2="340" />
+                <line x1="260" y1="0" x2="260" y2="340" />
+                <line x1="400" y1="0" x2="400" y2="340" />
+                <line x1="540" y1="0" x2="540" y2="340" />
+              </g>
+
+              <!-- Botanical Sanctuary Parkland -->
+              <path d="M260,70 Q340,55 430,85 L440,165 Q340,155 255,165 Z" fill="#0f2926" opacity="0.75" />
+              <text x="345" y="102" text-anchor="middle" fill="#34d399" font-size="9" letter-spacing="1.5" opacity="0.85">PARC MOYNIER &amp; PALACE GARDENS</text>
+
+              <!-- Lake Geneva (Lac Léman) Basin -->
+              <path d="M0,210 Q190,175 370,205 T680,185 L680,340 L0,340 Z" fill="url(#lakeWaterGrad)" />
+              <path d="M0,210 Q190,175 370,205 T680,185" fill="none" stroke="#60a5fa" stroke-width="2" opacity="0.55" />
+              <text x="515" y="295" text-anchor="middle" fill="#93c5fd" font-size="13" letter-spacing="3" font-weight="bold" opacity="0.8">LAC LÉMAN (LAKE GENEVA)</text>
+
+              <!-- Arterial Boulevards & Chauffeur Transfer Corridors -->
+              <path d="M75,48 Q165,85 215,130 L350,155 L560,125" fill="none" stroke="#475569" stroke-width="4" />
+              <path d="M215,130 L350,155" fill="none" stroke="#d4af63" stroke-width="2.5" stroke-dasharray="6,4" id="mapRouteCorridorLine" />
+              <path d="M350,155 L350,238" fill="none" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4,3" />
+              <text x="200" y="182" fill="#94a3b8" font-size="10" letter-spacing="1">QUAI DU MONT-BLANC PROMENADE</text>
+
+              <!-- Jet d'Eau Water Landmark -->
+              <path d="M545,255 Q545,195 552,195 Q559,195 559,255" fill="none" stroke="#bae6fd" stroke-width="2.5" stroke-dasharray="3,2" />
+              <text x="552" y="272" text-anchor="middle" fill="#bae6fd" font-size="9.5">JET D'EAU FOUNTAIN</text>
+
+              <!-- PIN 1: Geneva International Airport (GVA) VIP Tarmac -->
+              <g onclick="window.AureliaApp.selectContactMapPin('airport')" style="cursor:pointer;">
+                <circle cx="85" cy="52" r="16" fill="rgba(56,189,248,0.18)" />
+                <circle cx="85" cy="52" r="7" fill="#38bdf8" stroke="#fff" stroke-width="1.5" />
+                <text x="85" y="30" text-anchor="middle" fill="#e0f2fe" font-size="10.5" font-weight="bold">✈ GVA VIP TARMAC (15 MIN)</text>
+              </g>
+
+              <!-- PIN 2: Geneva Cornavin Grand Rail Terminal -->
+              <g onclick="window.AureliaApp.selectContactMapPin('rail')" style="cursor:pointer;">
+                <circle cx="215" cy="130" r="14" fill="rgba(148,163,184,0.22)" />
+                <circle cx="215" cy="130" r="6.5" fill="#cbd5e1" stroke="#0f172a" stroke-width="1.5" />
+                <text x="215" y="110" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="bold">🚆 CORNAVIN RAIL (6 MIN)</text>
+              </g>
+
+              <!-- PIN 3: MAISON AURÉLIA GRAND PALACE & SANCTUARY (Primary Hub) -->
+              <g onclick="window.AureliaApp.selectContactMapPin('palace')" style="cursor:pointer;">
+                <circle cx="350" cy="155" r="36" fill="url(#palaceGlow)" />
+                <circle cx="350" cy="155" r="11" fill="#d4af63" stroke="#fff" stroke-width="2.5" />
+                <rect x="252" y="116" width="196" height="22" rx="4" fill="rgba(15,23,42,0.9)" stroke="#d4af63" stroke-width="1" />
+                <text x="350" y="131" text-anchor="middle" fill="#f8f1e0" font-size="11" font-weight="bold" letter-spacing="0.8">★ MAISON AURÉLIA PALACE</text>
+              </g>
+
+              <!-- PIN 4: Rooftop Helipad H1 (ICAO: LSMA) -->
+              <g onclick="window.AureliaApp.selectContactMapPin('helipad')" style="cursor:pointer;">
+                <circle cx="435" cy="128" r="15" fill="rgba(245,158,11,0.2)" />
+                <circle cx="435" cy="128" r="7" fill="#f59e0b" stroke="#fff" stroke-width="1.5" />
+                <text x="505" y="132" text-anchor="start" fill="#fde68a" font-size="10" font-weight="bold">🚁 HELIPAD H1 (LSMA)</text>
+              </g>
+
+              <!-- PIN 5: Private Marina Yacht Pier #4 -->
+              <g onclick="window.AureliaApp.selectContactMapPin('pier')" style="cursor:pointer;">
+                <circle cx="350" cy="238" r="16" fill="rgba(96,165,250,0.25)" />
+                <circle cx="350" cy="238" r="7.5" fill="#60a5fa" stroke="#fff" stroke-width="1.5" />
+                <text x="350" y="264" text-anchor="middle" fill="#bfdbfe" font-size="10.5" font-weight="bold">⚓ PRIVATE YACHT PIER #4</text>
+              </g>
+            </svg>
+          </div>
+
+          <!-- Quick Landmark Selector Buttons -->
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.75rem;">
+            <span style="font-size:0.74rem;color:#94a3b8;align-self:center;">Click a Map Pin:</span>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('palace')" style="font-size:0.74rem;">★ Maison Aurélia Palace</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('airport')" style="font-size:0.74rem;">✈ GVA VIP Airport</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('helipad')" style="font-size:0.74rem;">🚁 Rooftop Helipad H1</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('pier')" style="font-size:0.74rem;">⚓ Private Yacht Pier #4</button>
+            <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.selectContactMapPin('rail')" style="font-size:0.74rem;">🚆 Cornavin Terminal</button>
+          </div>
+
+          <!-- Selected Map Pin Details & 1-Click Pre-Fill -->
+          <div id="contactMapSelectedPinBox" style="margin-top:0.85rem;padding:0.9rem;border-radius:var(--radius-sm);background:rgba(255,255,255,0.05);border:1px solid rgba(212,175,99,0.35);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">
+              <div>
+                <span id="contactPinBadge" class="staging-badge" style="margin-bottom:0.25rem;display:inline-block;">PALACE FLAGSHIP COORDINATES</span>
+                <h4 id="contactPinTitle" style="font-family:var(--font-serif);font-size:1.15rem;color:var(--gold-bright);">Maison Aurélia Grand Palace &amp; Sanctuary</h4>
+              </div>
+              <code id="contactPinCoords" style="font-size:0.76rem;color:#93c5fd;">46.2085° N, 6.1496° E</code>
+            </div>
+            <p id="contactPinDesc" style="font-size:0.83rem;color:#cbd5e1;margin:0.45rem 0 0.7rem;">
+              18 Quai du Mont-Blanc, 1201 Geneva, Switzerland. Private gated courtyard with 24/7 Rolls-Royce valet reception, underground armoured garage, and direct waterfront promenade access.
+            </p>
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+              <span id="contactPinTransferTime" style="font-size:0.76rem;color:var(--gold-bright);font-weight:700;">
+                Rolls-Royce Chauffeur Standby: Immediate On-Site
+              </span>
+              <button type="button" class="staging-banner-action" onclick="window.AureliaApp.applyMapPinToContactForm()">
+                Attach This Location to My Message &rarr;
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Direct Palace Department Directory Card -->
+        <div class="price-summary-card" style="position:static;">
+          <span class="section-eyebrow">24/7 PALACE DIRECTORY &amp; DIRECT DESKS</span>
+          <h3 style="font-family:var(--font-serif);font-size:1.4rem;margin-bottom:0.75rem;">Direct Department Contacts</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.75rem;font-size:0.83rem;">
+            <div style="padding:0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:#fff;">
+              <strong style="color:var(--text-primary);display:block;">Head Concierge &amp; Admin Desk</strong>
+              <span style="color:var(--text-muted);font-size:0.78rem;">Bespoke itineraries, VIP protocol &amp; general inquiries</span>
+              <div style="margin-top:0.35rem;font-weight:700;color:var(--gold-primary);">+41 22 819 0000</div>
+              <div style="font-size:0.76rem;color:var(--text-muted);">concierge@maisonaurelia.luxury</div>
+            </div>
+            <div style="padding:0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:#fff;">
+              <strong style="color:var(--text-primary);display:block;">Private Aviation &amp; Chauffeur</strong>
+              <span style="color:var(--text-muted);font-size:0.78rem;">GVA VIP tarmac, Helipad H1 &amp; Rolls-Royce fleet</span>
+              <div style="margin-top:0.35rem;font-weight:700;color:var(--gold-primary);">+41 22 819 0088</div>
+              <div style="font-size:0.76rem;color:var(--text-muted);">aviation@maisonaurelia.luxury</div>
+            </div>
+            <div style="padding:0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:#fff;">
+              <strong style="color:var(--text-primary);display:block;">2★ Michelin Dining &amp; Sanctuary</strong>
+              <span style="color:var(--text-muted);font-size:0.78rem;">L'Orangerie du Lac Chef's Table &amp; Thermal Spa</span>
+              <div style="margin-top:0.35rem;font-weight:700;color:var(--gold-primary);">+41 22 819 0042</div>
+              <div style="font-size:0.76rem;color:var(--text-muted);">dining@maisonaurelia.luxury</div>
+            </div>
+            <div style="padding:0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:#fff;">
+              <strong style="color:var(--text-primary);display:block;">Billing, Diplomatic &amp; Events</strong>
+              <span style="color:var(--text-muted);font-size:0.78rem;">Folios, wire transfers &amp; private wing buyouts</span>
+              <div style="margin-top:0.35rem;font-weight:700;color:var(--gold-primary);">+41 22 819 0099</div>
+              <div style="font-size:0.76rem;color:var(--text-muted);">finance@maisonaurelia.luxury</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT COLUMN: Contact Page Message Form -> Routes Directly to Admin Inbox -->
+      <div style="display:flex;flex-direction:column;gap:1.5rem;">
+        <div class="price-summary-card" style="position:static;background:#ffffff;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.4rem;">
+            <span class="section-eyebrow" style="margin-bottom:0;">DIRECT TO ADMIN MESSAGING INBOX</span>
+            <span class="status-pill confirmed" style="font-size:0.72rem;">Live Admin Inbox Routing</span>
+          </div>
+          <h3 style="font-family:var(--font-serif);font-size:1.55rem;margin-bottom:0.35rem;">Send a Message to Admin &amp; Concierge</h3>
+          <p style="font-size:0.84rem;color:var(--text-muted);margin-bottom:1rem;">
+            Messages sent from this Contact Page create an instant conversation thread in the <strong>Admin Messaging Inbox</strong> (`#view-admin` &rarr; Tab 7) and in your <strong>Guest Messaging Inbox</strong> so Admin can reply directly to you.
+          </p>
+
+          <!-- 1-Click Quick Inquiry Topic Chips -->
+          <div style="margin-bottom:0.9rem;">
+            <span style="font-size:0.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:0.35rem;">Quick Inquiry Presets:</span>
+            <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+              <button type="button" class="nearby-date-btn" style="font-size:0.74rem;" onclick="window.AureliaApp.fillContactPreset('airport')">✈ Rolls-Royce Airport Transfer</button>
+              <button type="button" class="nearby-date-btn" style="font-size:0.74rem;" onclick="window.AureliaApp.fillContactPreset('viewing')">🏰 Private Suite Viewing</button>
+              <button type="button" class="nearby-date-btn" style="font-size:0.74rem;" onclick="window.AureliaApp.fillContactPreset('dining')">🍽️ 2★ Michelin Chef's Table</button>
+              <button type="button" class="nearby-date-btn" style="font-size:0.74rem;" onclick="window.AureliaApp.fillContactPreset('helipad')">🚁 Helipad H1 Landing Clearance</button>
+            </div>
+          </div>
+
+          <form id="contactPageMessageForm" onsubmit="window.AureliaApp.handleContactPageSubmit(event)">
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="contactGuestName">Your Full Name *</label>
+                <input type="text" id="contactGuestName" placeholder="e.g. Elena Rostova" required />
+              </div>
+              <div class="form-group">
+                <label for="contactGuestEmail">Your Email Address *</label>
+                <input type="email" id="contactGuestEmail" placeholder="elena.rostova@example.com" required />
+              </div>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="contactGuestPhone">Phone / WhatsApp (Optional)</label>
+                <input type="tel" id="contactGuestPhone" placeholder="+41 79 555 0192" />
+              </div>
+              <div class="form-group">
+                <label for="contactBookingRef">Booking Reference (Optional)</label>
+                <input type="text" id="contactBookingRef" placeholder="e.g. AUR-VIP001" />
+              </div>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="contactDepartment">Recipient Admin Department</label>
+                <select id="contactDepartment">
+                  <option value="Head Concierge & Admin">Head Concierge &amp; Admin</option>
+                  <option value="Private Aviation & Chauffeur">Private Aviation &amp; Chauffeur</option>
+                  <option value="Front Desk & Reception">Front Desk &amp; Reception</option>
+                  <option value="Dining & Thermal Sanctuary">2★ Michelin Dining &amp; Spa</option>
+                  <option value="Billing & Finance">Billing &amp; Finance</option>
+                  <option value="Executive Management">Executive Management</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="contactPriority">Inquiry Priority</label>
+                <select id="contactPriority">
+                  <option value="normal">Normal Inquiry</option>
+                  <option value="vip_urgent">VIP Urgent / Immediate Arrival</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="contactMapPoint">Selected Map Landmark / Arrival Point (Optional)</label>
+              <input type="text" id="contactMapPoint" value="Maison Aurélia Grand Palace (46.2085° N, 6.1496° E)" />
+            </div>
+
+            <div class="form-group">
+              <label for="contactSubject">Subject *</label>
+              <input type="text" id="contactSubject" placeholder="e.g. Chauffeur Pickup & Early Suite Check-In Inquiry" required />
+            </div>
+
+            <div class="form-group">
+              <label for="contactMessageBody">Message to Admin &amp; Concierge *</label>
+              <textarea id="contactMessageBody" rows="4" placeholder="Write your inquiry or special request here. It will appear immediately in the Admin Messaging Inbox..." required></textarea>
+            </div>
+
+            <button type="submit" class="btn-primary" style="width:100%;">
+              💬 Send Message to Admin Inbox
+            </button>
+          </form>
+
+          <!-- Instant Submission Confirmation & 1-Click Jump to Admin Inbox -->
+          <div id="contactSubmissionResultBox" class="hidden" style="margin-top:1rem;"></div>
+        </div>
+
+        <!-- Check Admin Replies & Continue Conversation Right on the Contact Page -->
+        <div class="price-summary-card" style="position:static;">
+          <span class="section-eyebrow">TRACK &amp; REPLY TO YOUR CONTACT THREAD</span>
+          <h3 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.35rem;">Check Admin Reply by Reference</h3>
+          <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.85rem;">
+            Already sent a message? Enter your Thread Reference (e.g. <code>MSG-VIP001</code>) and email to read Admin's reply and respond.
+          </p>
+          <form onsubmit="window.AureliaApp.handleContactThreadLookup(event)" class="form-grid-2" style="align-items:end;">
+            <div class="form-group" style="margin-bottom:0;">
+              <label for="contactLookupRef">Thread Reference</label>
+              <input type="text" id="contactLookupRef" placeholder="MSG-VIP001" value="MSG-VIP001" required />
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label for="contactLookupEmail">Email Address</label>
+              <input type="email" id="contactLookupEmail" placeholder="elena.rostova@example.com" value="elena.rostova@example.com" required />
+            </div>
+            <div style="grid-column:1 / -1;margin-top:0.4rem;">
+              <button type="submit" class="btn-secondary" style="width:100%;">Check Conversation &amp; Admin Replies</button>
+            </div>
+          </form>
+          <div id="contactThreadLookupResult" style="margin-top:1rem;"></div>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <!-- ===================================================================== -->
   <!-- VIEW 2: GUEST BOOKING LOOKUP, INVOICE & SELF-SERVICE CANCELLATION     -->
@@ -602,6 +922,7 @@
         <h4 class="footer-heading">Quick Portal Links</h4>
         <div style="display:flex;flex-direction:column;gap:0.5rem;align-items:flex-start;">
           <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('home')">Explore Room Catalogue</button>
+          <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('contact')">📍 Contact Page &amp; Interactive Map</button>
           <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('lookup')">Retrieve Booking / Cancel Stay</button>
           <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('portal')">Guest Privé Account &amp; Loyalty</button>
           <button type="button" class="staging-banner-action" onclick="window.AureliaApp.switchView('admin')">Hotel Staff Administration Console</button>
