@@ -263,6 +263,42 @@ function calculateStayPricing({
         roomSeasonalDiff += diff;
         if (matchingSeason.badge_text) appliedSeasonBadges.add(matchingSeason.badge_text);
       }
+
+      // Dynamic Yield / Scarcity Pricing Engine
+      if (settings && settings.dynamic_yield_enabled && Number(settings.high_demand_multiplier) > 1.0) {
+        const nextDay = addDays(nightDate, 1);
+        const totalInCat = db.prepare("SELECT COUNT(*) AS cnt FROM rooms WHERE category_id = ? AND status = 'available'").get(room.category_id).cnt;
+        if (totalInCat > 1) {
+          const occupiedInCat = db.prepare(`
+            SELECT COUNT(DISTINCT r.id) AS cnt
+            FROM rooms r
+            WHERE r.category_id = ?
+              AND r.id != ?
+              AND (
+                EXISTS (
+                  SELECT 1 FROM reservation_rooms rr
+                  JOIN reservations res ON res.id = rr.reservation_id
+                  WHERE rr.room_id = r.id AND rr.status = 'active'
+                    AND res.status IN ('confirmed', 'checked_in')
+                    AND rr.check_in < ? AND rr.check_out > ?
+                )
+                OR EXISTS (
+                  SELECT 1 FROM maintenance_blocks mb
+                  WHERE mb.room_id = r.id AND mb.status = 'active'
+                    AND mb.start_date < ? AND mb.end_date > ?
+                )
+              )
+          `).get(room.category_id, room.id, nextDay, nightDate, nextDay, nightDate).cnt;
+
+          const catOccupancyPct = (occupiedInCat / totalInCat) * 100;
+          const threshold = Number(settings.high_demand_occupancy_threshold || 50);
+          if (catOccupancyPct >= threshold) {
+            const yieldDiff = room.price_per_night * (Number(settings.high_demand_multiplier) - 1.0);
+            roomSeasonalDiff += yieldDiff;
+            appliedSeasonBadges.add(`High-Demand Yield (+${Math.round((Number(settings.high_demand_multiplier) - 1) * 100)}%)`);
+          }
+        }
+      }
     }
 
     roomBaseSum = roundMoney(roomBaseSum);
@@ -862,6 +898,124 @@ function generateRoomIcalFeed(roomId) {
   return lines.join('\r\n') + '\r\n';
 }
 
+function parseIcalDate(rawVal = '') {
+  const clean = String(rawVal).trim().replace(/^.*:/, '');
+  const m = clean.match(/^(\d{4})(\d{2})(\d{2})/);
+  if (!m) return null;
+  const formatted = `${m[1]}-${m[2]}-${m[3]}`;
+  return isValidDateString(formatted) ? formatted : null;
+}
+
+/**
+ * InboundIcalChannelSyncModule:
+ * Parses an RFC 5545 iCal (.ics) payload and imports external OTA / Channel Manager blocks
+ * into maintenance_blocks for a physical room, skipping any conflicting blocks safely.
+ */
+function importRoomIcalFeed({
+  roomId,
+  icsContent,
+  channelName = 'External Luxury Desk / OTA',
+  createdBy = 'Channel Manager Sync',
+  ipAddress = ''
+}) {
+  const db = getDb();
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(Number(roomId));
+  if (!room) {
+    const err = new Error('Physical room not found.');
+    err.code = 'ROOM_NOT_FOUND';
+    throw err;
+  }
+
+  if (!icsContent || !String(icsContent).includes('BEGIN:VCALENDAR')) {
+    const err = new Error('Invalid iCal (.ics) payload: missing BEGIN:VCALENDAR header.');
+    err.code = 'INVALID_ICAL_PAYLOAD';
+    throw err;
+  }
+
+  const eventBlocks = String(icsContent).split('BEGIN:VEVENT').slice(1);
+  const importedBlocks = [];
+  const skippedBlocks = [];
+
+  const insertBlock = db.prepare(`
+    INSERT INTO maintenance_blocks (room_id, start_date, end_date, reason, created_by, status)
+    VALUES (?, ?, ?, ?, ?, 'active')
+  `);
+
+  for (const rawBlock of eventBlocks) {
+    const body = rawBlock.split('END:VEVENT')[0] || '';
+    const lines = body.split(/\r?\n/);
+    let startDate = null;
+    let endDate = null;
+    let summary = 'External Channel Reservation Block';
+
+    for (const line of lines) {
+      if (line.startsWith('DTSTART')) {
+        startDate = parseIcalDate(line);
+      } else if (line.startsWith('DTEND')) {
+        endDate = parseIcalDate(line);
+      } else if (line.startsWith('SUMMARY:')) {
+        summary = line.slice('SUMMARY:'.length).trim() || summary;
+      }
+    }
+
+    if (!startDate || !endDate || startDate >= endDate) {
+      skippedBlocks.push({ startDate, endDate, summary, reason: 'INVALID_DATES' });
+      continue;
+    }
+
+    // Check if an identical maintenance block already exists
+    const duplicate = db.prepare(`
+      SELECT id FROM maintenance_blocks
+      WHERE room_id = ? AND status = 'active' AND start_date = ? AND end_date = ?
+    `).get(room.id, startDate, endDate);
+
+    if (duplicate) {
+      skippedBlocks.push({ startDate, endDate, summary, reason: 'ALREADY_IMPORTED' });
+      continue;
+    }
+
+    try {
+      const reasonText = `[${channelName}] ${summary}`;
+      const res = insertBlock.run(room.id, startDate, endDate, reasonText, createdBy);
+      importedBlocks.push({
+        id: Number(res.lastInsertRowid),
+        roomId: room.id,
+        roomNumber: room.room_number,
+        startDate,
+        endDate,
+        reason: reasonText
+      });
+    } catch (err) {
+      skippedBlocks.push({
+        startDate,
+        endDate,
+        summary,
+        reason: err.message
+      });
+    }
+  }
+
+  logAudit({
+    eventType: 'ICAL_CHANNEL_IMPORT',
+    entityType: 'room',
+    entityId: room.room_number,
+    actorRole: 'staff',
+    summary: `Imported ${importedBlocks.length} iCal event block(s) for Room #${room.room_number} from ${channelName} (${skippedBlocks.length} skipped).`,
+    details: { channelName, importedCount: importedBlocks.length, skippedCount: skippedBlocks.length },
+    ipAddress
+  });
+
+  return {
+    roomId: room.id,
+    roomNumber: room.room_number,
+    channelName,
+    importedCount: importedBlocks.length,
+    skippedCount: skippedBlocks.length,
+    importedBlocks,
+    skippedBlocks
+  };
+}
+
 module.exports = {
   CURRENCY_RATES,
   getCurrencyInfo,
@@ -879,5 +1033,6 @@ module.exports = {
   searchAvailability,
   getRoomAvailabilityStrip,
   getFrontDeskTapeChart,
-  generateRoomIcalFeed
+  generateRoomIcalFeed,
+  importRoomIcalFeed
 };

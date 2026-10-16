@@ -595,6 +595,9 @@ function getReservationByReference(bookingReference) {
   }
 
   const guestReview = db.prepare('SELECT * FROM guest_reviews WHERE reservation_id = ?').get(res.id) || null;
+  const facilityBookings = db.prepare(
+    "SELECT * FROM facility_bookings WHERE reservation_id = ? AND status = 'confirmed' ORDER BY reservation_date ASC, slot_time ASC"
+  ).all(res.id);
   const incidentalTotal = roundMoney(folioCharges.reduce((sum, c) => sum + Number(c.total_amount || 0), 0));
   const grandFolioTotal = roundMoney(Number(res.total_amount || 0) + incidentalTotal);
   const remainingFolioBalance = roundMoney(Math.max(0, grandFolioTotal - Number(res.amount_paid || 0)));
@@ -606,6 +609,7 @@ function getReservationByReference(bookingReference) {
     payments,
     notifications,
     folioCharges,
+    facilityBookings,
     incidentalTotal,
     grandFolioTotal,
     remainingFolioBalance,
@@ -1116,6 +1120,153 @@ function submitGuestReview({
   return getReservationByReference(existing.booking_reference);
 }
 
+const FACILITY_NAMES = {
+  michelin_dining: 'Le Jardin d’Or (Three-Michelin-Starred Restaurant)',
+  thermal_spa: 'Travertine Thermal Sanctuary & Spa',
+  private_cinema: 'Aurélia Private Velvet Cinema',
+  yacht_charter: 'Lakefront Private Riva Yacht Pier'
+};
+
+/**
+ * DiningAndSpaSlotBookingModule:
+ * Books a specific time-slot at Le Jardin d'Or or the Travertine Thermal Sanctuary,
+ * prevents overlapping duplicate slot bookings, and links charges to the guest folio.
+ */
+function bookFacilitySlot({
+  bookingReference,
+  facilityType = 'michelin_dining',
+  reservationDate,
+  slotTime = '19:30',
+  guestsCount = 2,
+  treatmentOrMenu = 'Seven-Course Chef Tasting Table',
+  price = 0,
+  actorEmail = '',
+  ipAddress = ''
+}) {
+  const existing = getReservationByReference(bookingReference);
+  if (!existing) {
+    const err = new Error('Reservation not found.');
+    err.code = 'RESERVATION_NOT_FOUND';
+    throw err;
+  }
+  if (existing.status === 'cancelled') {
+    const err = new Error('Cannot book dining or spa slots for a cancelled reservation.');
+    err.code = 'RESERVATION_CANCELLED';
+    throw err;
+  }
+
+  const targetDate = reservationDate || existing.check_in;
+  const db = getDb();
+
+  return withImmediateTransaction(db, () => {
+    const duplicateSlot = db.prepare(`
+      SELECT id FROM facility_bookings
+      WHERE reservation_id = ? AND facility_type = ? AND reservation_date = ? AND slot_time = ? AND status = 'confirmed'
+    `).get(existing.id, facilityType, targetDate, slotTime);
+
+    if (duplicateSlot) {
+      const err = new Error(`You already have a confirmed ${FACILITY_NAMES[facilityType] || facilityType} slot on ${targetDate} at ${slotTime}.`);
+      err.code = 'FACILITY_SLOT_ALREADY_BOOKED';
+      throw err;
+    }
+
+    const numPrice = roundMoney(Math.max(0, Number(price || 0)));
+    const numGuests = Math.max(1, Number(guestsCount || 2));
+    const facilityName = FACILITY_NAMES[facilityType] || 'Hotel Sanctuary Facility';
+
+    let folioChargeId = null;
+    if (numPrice > 0) {
+      const folioCategory = facilityType === 'michelin_dining' ? 'Le Jardin d’Or Restaurant' : 'Thermal Spa & Wellness';
+      const fRes = db.prepare(`
+        INSERT INTO folio_charges (
+          reservation_id, booking_reference, category, description, unit_price, quantity, total_amount, posted_by
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, 'Online Concierge Slot Booking')
+      `).run(
+        existing.id,
+        existing.booking_reference,
+        folioCategory,
+        `${treatmentOrMenu} (${targetDate} @ ${slotTime}, ${numGuests} guests)`,
+        numPrice,
+        numPrice
+      );
+      folioChargeId = Number(fRes.lastInsertRowid);
+    }
+
+    const slotRes = db.prepare(`
+      INSERT INTO facility_bookings (
+        reservation_id, booking_reference, facility_type, facility_name,
+        reservation_date, slot_time, guests_count, treatment_or_menu,
+        price, folio_charge_id, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed')
+    `).run(
+      existing.id,
+      existing.booking_reference,
+      facilityType,
+      facilityName,
+      targetDate,
+      slotTime,
+      numGuests,
+      treatmentOrMenu,
+      numPrice,
+      folioChargeId
+    );
+
+    logAudit({
+      eventType: 'FACILITY_SLOT_BOOKED',
+      entityType: 'reservation',
+      entityId: existing.booking_reference,
+      actorRole: 'guest',
+      actorEmail: actorEmail || existing.guest_email,
+      summary: `Booked ${facilityName} slot (${treatmentOrMenu}) for ${existing.booking_reference} on ${targetDate} at ${slotTime} ($${numPrice.toFixed(2)}).`,
+      details: { slotId: Number(slotRes.lastInsertRowid), facilityType, targetDate, slotTime, treatmentOrMenu, price: numPrice },
+      ipAddress
+    });
+
+    return getReservationByReference(existing.booking_reference);
+  });
+}
+
+function cancelFacilitySlot({
+  bookingReference,
+  slotId,
+  actorEmail = '',
+  ipAddress = ''
+}) {
+  const existing = getReservationByReference(bookingReference);
+  if (!existing) {
+    const err = new Error('Reservation not found.');
+    err.code = 'RESERVATION_NOT_FOUND';
+    throw err;
+  }
+
+  const db = getDb();
+  return withImmediateTransaction(db, () => {
+    const slot = db.prepare('SELECT * FROM facility_bookings WHERE id = ? AND reservation_id = ?').get(Number(slotId), existing.id);
+    if (!slot) {
+      const err = new Error('Facility booking slot not found.');
+      err.code = 'SLOT_NOT_FOUND';
+      throw err;
+    }
+
+    db.prepare("UPDATE facility_bookings SET status = 'cancelled' WHERE id = ?").run(slot.id);
+    if (slot.folio_charge_id) {
+      db.prepare('DELETE FROM folio_charges WHERE id = ?').run(slot.folio_charge_id);
+    }
+
+    logAudit({
+      eventType: 'FACILITY_SLOT_CANCELLED',
+      entityType: 'reservation',
+      entityId: existing.booking_reference,
+      actorRole: 'guest',
+      actorEmail: actorEmail || existing.guest_email,
+      summary: `Cancelled facility slot #${slot.id} (${slot.treatment_or_menu} on ${slot.reservation_date} @ ${slot.slot_time}) for ${existing.booking_reference}.`,
+      ipAddress
+    });
+
+    return getReservationByReference(existing.booking_reference);
+  });
+}
+
 module.exports = {
   generateBookingReference,
   createCheckoutHold,
@@ -1127,5 +1278,7 @@ module.exports = {
   savePreArrivalDossier,
   addFolioCharge,
   removeFolioCharge,
-  submitGuestReview
+  submitGuestReview,
+  bookFacilitySlot,
+  cancelFacilitySlot
 };

@@ -1530,13 +1530,82 @@
           </div>
         ` : ''}
 
-        <!-- In-Stay Incidental Folio Ledger -->
+        <!-- In-Stay Incidental Folio Ledger & FolioChargeVoidUI -->
         ${res.folioCharges && res.folioCharges.length > 0 ? `
           <div style="border-top:1px solid var(--border-subtle);padding-top:0.85rem;margin-bottom:1rem;">
             <strong style="font-size:0.82rem;text-transform:uppercase;color:var(--text-muted);">In-Stay Incidental Folio Charges ($${Number(res.incidentalTotal).toFixed(2)} USD):</strong>
             <ul style="padding-left:1.2rem;font-size:0.84rem;margin-top:0.35rem;">
-              ${res.folioCharges.map((fc) => `<li><strong>${escapeHtml(fc.category)}</strong>: ${escapeHtml(fc.description)} (${fc.quantity} × $${Number(fc.unit_price).toFixed(2)}) = <strong>$${Number(fc.total_amount).toFixed(2)} USD</strong></li>`).join('')}
+              ${res.folioCharges.map((fc) => `
+                <li style="margin-bottom:0.25rem;">
+                  <strong>${escapeHtml(fc.category)}</strong>: ${escapeHtml(fc.description)} (${fc.quantity} × $${Number(fc.unit_price).toFixed(2)}) = <strong>$${Number(fc.total_amount).toFixed(2)} USD</strong>
+                  ${state.currentUser && ['finance', 'manager', 'admin'].includes(state.currentUser.role) ? `
+                    <button type="button" class="nearby-date-btn" style="margin-left:0.5rem;" onclick="window.AureliaApp.voidFolioChargeUI('${escapeHtml(res.booking_reference)}', ${fc.id}, '${escapeHtml(verificationEmail || res.guest_email)}')">
+                      Void Charge
+                    </button>
+                  ` : ''}
+                </li>
+              `).join('')}
             </ul>
+          </div>
+        ` : ''}
+
+        <!-- DiningAndSpaSlotBookingModule UI -->
+        ${res.status !== 'cancelled' ? `
+          <div style="border-top:1px solid var(--border-subtle);padding-top:1rem;margin-bottom:1rem;">
+            <strong style="font-size:0.84rem;text-transform:uppercase;color:var(--gold-primary);display:block;margin-bottom:0.5rem;">
+              🍽️ Michelin Dining &amp; Thermal Sanctuary Time-Slot Reservations
+            </strong>
+            ${res.facilityBookings && res.facilityBookings.length > 0 ? `
+              <div style="margin-bottom:0.75rem;">
+                ${res.facilityBookings.map((fb) => `
+                  <div style="display:flex;justify-content:space-between;align-items:center;background:#f0fdf4;border:1px solid #bbf7d0;padding:0.5rem 0.75rem;border-radius:6px;margin-bottom:0.35rem;font-size:0.82rem;">
+                    <span>
+                      <strong>${escapeHtml(fb.facility_name)}</strong> — ${escapeHtml(fb.treatment_or_menu)}
+                      (${escapeHtml(fb.reservation_date)} @ <strong>${escapeHtml(fb.slot_time)}</strong>, ${fb.guests_count} guests, $${Number(fb.price).toFixed(2)})
+                    </span>
+                    <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.cancelFacilitySlotUI('${escapeHtml(res.booking_reference)}', ${fb.id}, '${escapeHtml(verificationEmail || res.guest_email)}')">
+                      Cancel Slot
+                    </button>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+            <form onsubmit="window.AureliaApp.submitFacilitySlotBooking(event, '${escapeHtml(res.booking_reference)}', '${escapeHtml(verificationEmail || res.guest_email)}')" class="search-grid" style="background:var(--bg-ivory);padding:0.85rem;border-radius:6px;">
+              <div class="search-field">
+                <label>Sanctuary Venue</label>
+                <select id="facTypeInput">
+                  <option value="michelin_dining">Le Jardin d’Or (3-Michelin-Star)</option>
+                  <option value="thermal_spa">Travertine Thermal Spa</option>
+                  <option value="private_cinema">Aurélia Private Velvet Cinema</option>
+                  <option value="yacht_charter">Riva Yacht Marina Pier</option>
+                </select>
+              </div>
+              <div class="search-field">
+                <label>Date</label>
+                <input type="date" id="facDateInput" value="${escapeHtml(res.check_in)}" required />
+              </div>
+              <div class="search-field">
+                <label>Time Slot</label>
+                <select id="facTimeInput">
+                  <option value="11:00">11:00 Morning</option>
+                  <option value="14:30">14:30 Afternoon</option>
+                  <option value="17:00">17:00 Twilight</option>
+                  <option value="19:30" selected>19:30 First Seating</option>
+                  <option value="21:00">21:00 Gala Seating</option>
+                </select>
+              </div>
+              <div class="search-field">
+                <label>Menu / Treatment</label>
+                <input type="text" id="facMenuInput" value="Seven-Course Chef Tasting Table" required />
+              </div>
+              <div class="search-field">
+                <label>Folio Charge ($)</label>
+                <input type="number" step="1" id="facPriceInput" value="195" min="0" required />
+              </div>
+              <div class="search-field">
+                <button type="submit" class="btn-primary" style="width:100%;">Reserve Slot</button>
+              </div>
+            </form>
           </div>
         ` : ''}
 
@@ -1692,6 +1761,60 @@
       const container = document.getElementById('lookupResultContainer');
       if (container) {
         renderLookupReservationCard(res.reservation, container, email);
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function submitFacilitySlotBooking(e, bookingReference, email) {
+    e.preventDefault();
+    try {
+      const res = await apiFetch(`/api/bookings/${encodeURIComponent(bookingReference)}/facilities`, {
+        method: 'POST',
+        body: JSON.stringify({
+          email,
+          facilityType: document.getElementById('facTypeInput').value,
+          reservationDate: document.getElementById('facDateInput').value,
+          slotTime: document.getElementById('facTimeInput').value,
+          treatmentOrMenu: document.getElementById('facMenuInput').value,
+          price: Number(document.getElementById('facPriceInput').value || 0)
+        })
+      });
+      const container = document.getElementById('lookupResultContainer');
+      if (container) {
+        renderLookupReservationCard(res.reservation, container, email);
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function cancelFacilitySlotUI(bookingReference, slotId, email) {
+    try {
+      const res = await apiFetch(`/api/bookings/${encodeURIComponent(bookingReference)}/facilities/${slotId}?email=${encodeURIComponent(email)}`, {
+        method: 'DELETE'
+      });
+      const container = document.getElementById('lookupResultContainer');
+      if (container) {
+        renderLookupReservationCard(res.reservation, container, email);
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function voidFolioChargeUI(bookingReference, chargeId, email) {
+    try {
+      const res = await apiFetch(`/api/admin/reservations/${encodeURIComponent(bookingReference)}/folio/${chargeId}`, {
+        method: 'DELETE'
+      });
+      const container = document.getElementById('lookupResultContainer');
+      if (container && !document.getElementById('view-lookup').classList.contains('hidden')) {
+        renderLookupReservationCard(res.reservation, container, email);
+      }
+      if (!document.getElementById('view-admin').classList.contains('hidden')) {
+        await loadAdminTab('reservations');
       }
     } catch (err) {
       alert(err.message);
@@ -2505,6 +2628,39 @@
         </form>
       </div>
 
+      <!-- InboundIcalChannelSyncModule UI -->
+      <div class="kpi-card" style="margin-bottom:1.75rem;">
+        <h4 style="font-family:var(--font-serif);font-size:1.3rem;margin-bottom:0.5rem;">Inbound iCal Channel Sync Importer (Virtuoso / Amex FHR / OTA)</h4>
+        <p style="font-size:0.8rem;color:#64748b;margin-bottom:0.75rem;">
+          Paste an external RFC 5545 <code>.ics</code> calendar payload to automatically import external channel blocks into the room availability calendar while preventing overlapping double bookings.
+        </p>
+        <form onsubmit="window.AureliaApp.handleImportIcalSubmit(event)" class="search-grid">
+          <div class="search-field">
+            <label>Target Physical Room</label>
+            <select id="icalRoomId" required>
+              ${cal.rooms.map((r) => `<option value="${r.id}">#${escapeHtml(r.room_number)} — ${escapeHtml(r.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="search-field">
+            <label>External Channel Name</label>
+            <input type="text" id="icalChannelName" value="Virtuoso Luxury Network" required />
+          </div>
+          <div class="search-field" style="grid-column:span 2;">
+            <label>RFC 5545 .ics VEVENT Payload</label>
+            <textarea id="icalContentInput" rows="2" style="width:100%;font-family:monospace;font-size:0.75rem;">BEGIN:VCALENDAR
+BEGIN:VEVENT
+DTSTART;VALUE=DATE:20261210
+DTEND;VALUE=DATE:20261213
+SUMMARY:Virtuoso VIP Hold
+END:VEVENT
+END:VCALENDAR</textarea>
+          </div>
+          <div class="search-field">
+            <button type="submit" class="btn-primary" style="width:100%;">Import .ics Feed</button>
+          </div>
+        </form>
+      </div>
+
       <div class="checkout-columns">
         <div>
           <h4 style="font-family:var(--font-serif);font-size:1.3rem;margin-bottom:0.75rem;">Active Maintenance Closures (${cal.maintenanceBlocks.length})</h4>
@@ -2590,6 +2746,25 @@
     }
   }
 
+  async function handleImportIcalSubmit(e) {
+    e.preventDefault();
+    try {
+      const roomId = Number(document.getElementById('icalRoomId').value);
+      const res = await apiFetch(`/api/admin/rooms/${roomId}/ical-import`, {
+        method: 'POST',
+        body: JSON.stringify({
+          channelName: document.getElementById('icalChannelName').value,
+          icsContent: document.getElementById('icalContentInput').value
+        })
+      });
+      alert(`Inbound iCal Sync Complete: ${res.importedCount} block(s) imported, ${res.skippedCount} skipped.`);
+      await loadAdminTab('calendar');
+      await performAvailabilitySearch();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   async function renderAdminSettingsTab(container) {
     const cfg = await apiFetch('/api/config');
     const s = cfg.settings;
@@ -2597,7 +2772,7 @@
     container.innerHTML = `
       <div class="checkout-columns">
         <div class="kpi-card">
-          <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.75rem;">Hotel Policies, Taxes, Deposits &amp; Environment Mode</h4>
+          <h4 style="font-family:var(--font-serif);font-size:1.35rem;margin-bottom:0.75rem;">Hotel Policies, Taxes, Dynamic Yield &amp; Environment Mode</h4>
           <form onsubmit="window.AureliaApp.handleSaveSettingsSubmit(event)">
             <div class="form-grid-2">
               <div class="form-group">
@@ -2645,27 +2820,107 @@
                 <input type="number" id="setCancelHours" value="${s.free_cancellation_hours}" required />
               </div>
             </div>
-            <button type="submit" class="btn-primary" style="width:100%;">Save Hotel Policies &amp; Financial Settings</button>
+
+            <div style="border-top:1px solid #e2e8f0;padding-top:0.85rem;margin-top:0.5rem;margin-bottom:0.85rem;">
+              <strong style="font-size:0.78rem;text-transform:uppercase;color:#1e293b;display:block;margin-bottom:0.5rem;">
+                📈 Dynamic Occupancy-Based Yield Pricing Engine
+              </strong>
+              <div class="form-grid-3">
+                <div class="form-group">
+                  <label>Dynamic Yield Mode</label>
+                  <select id="setDynamicYieldEnabled">
+                    <option value="1" ${s.dynamic_yield_enabled !== 0 ? 'selected' : ''}>Enabled (Auto Surge)</option>
+                    <option value="0" ${s.dynamic_yield_enabled === 0 ? 'selected' : ''}>Disabled</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Occupancy Threshold (%)</label>
+                  <input type="number" step="1" id="setYieldThreshold" value="${s.high_demand_occupancy_threshold || 70}" required />
+                </div>
+                <div class="form-group">
+                  <label>High-Demand Multiplier (×)</label>
+                  <input type="number" step="0.05" id="setYieldMultiplier" value="${s.high_demand_multiplier || 1.15}" required />
+                </div>
+              </div>
+            </div>
+
+            <button type="submit" class="btn-primary" style="width:100%;">Save Hotel Policies, Yield Engine &amp; Financial Settings</button>
           </form>
         </div>
 
         <div>
+          <!-- SeasonalRatesManagerUI -->
           <div class="kpi-card" style="margin-bottom:1.25rem;">
             <h4 style="font-family:var(--font-serif);font-size:1.3rem;margin-bottom:0.75rem;">Active Seasonal Rate Multipliers</h4>
             <ul style="padding-left:1.2rem;font-size:0.84rem;margin-bottom:0.85rem;">
               ${(cfg.seasonalRates || []).map((sr) => `
-                <li><strong>${escapeHtml(sr.name)}</strong>: ${escapeHtml(sr.start_date)} to ${escapeHtml(sr.end_date)} (×${sr.multiplier})</li>
+                <li style="margin-bottom:0.35rem;display:flex;justify-content:space-between;align-items:center;">
+                  <span><strong>${escapeHtml(sr.name)}</strong>: ${escapeHtml(sr.start_date)} to ${escapeHtml(sr.end_date)} (×${sr.multiplier})</span>
+                  <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.deleteSeasonalRateUI(${sr.id})">Delete</button>
+                </li>
               `).join('')}
             </ul>
+            <form onsubmit="window.AureliaApp.handleCreateSeasonalRateSubmit(event)" class="form-grid-2" style="border-top:1px solid #e2e8f0;padding-top:0.75rem;">
+              <div class="form-group">
+                <label>Season Name</label>
+                <input type="text" id="srName" placeholder="Monaco Yacht Show Week" required />
+              </div>
+              <div class="form-group">
+                <label>Rate Multiplier (×)</label>
+                <input type="number" step="0.05" id="srMultiplier" value="1.30" required />
+              </div>
+              <div class="form-group">
+                <label>Start Date</label>
+                <input type="date" id="srStart" value="${addDaysStr(todayStr(), 30)}" required />
+              </div>
+              <div class="form-group">
+                <label>End Date</label>
+                <input type="date" id="srEnd" value="${addDaysStr(todayStr(), 40)}" required />
+              </div>
+              <div class="form-group" style="grid-column:span 2;">
+                <button type="submit" class="btn-outline-dark" style="width:100%;">+ Add Seasonal Rate Rule</button>
+              </div>
+            </form>
           </div>
 
+          <!-- PromoCodesManagerUI -->
           <div class="kpi-card">
             <h4 style="font-family:var(--font-serif);font-size:1.3rem;margin-bottom:0.75rem;">Configured Promotional Codes</h4>
-            <ul style="padding-left:1.2rem;font-size:0.84rem;">
+            <ul style="padding-left:1.2rem;font-size:0.84rem;margin-bottom:0.85rem;">
               ${(cfg.promoCodes || []).map((pc) => `
-                <li><code>${escapeHtml(pc.code)}</code> — ${escapeHtml(pc.description)} (${pc.discount_type === 'percent' ? pc.discount_value + '%' : '$' + pc.discount_value})</li>
+                <li style="margin-bottom:0.35rem;display:flex;justify-content:space-between;align-items:center;">
+                  <span><code>${escapeHtml(pc.code)}</code> — ${escapeHtml(pc.description)} (${pc.discount_type === 'percent' ? pc.discount_value + '%' : '$' + pc.discount_value}, min ${pc.min_nights || 1}n)</span>
+                  ${pc.id ? `<button type="button" class="nearby-date-btn" onclick="window.AureliaApp.deletePromoCodeUI(${pc.id})">Delete</button>` : ''}
+                </li>
               `).join('')}
             </ul>
+            <form onsubmit="window.AureliaApp.handleCreatePromoCodeSubmit(event)" class="form-grid-2" style="border-top:1px solid #e2e8f0;padding-top:0.75rem;">
+              <div class="form-group">
+                <label>Promo Code</label>
+                <input type="text" id="pcCode" placeholder="GALA25" required />
+              </div>
+              <div class="form-group">
+                <label>Discount Type &amp; Value</label>
+                <div style="display:flex;gap:0.35rem;">
+                  <select id="pcType" style="width:55%;">
+                    <option value="percent">% Percent</option>
+                    <option value="fixed">$ Fixed USD</option>
+                  </select>
+                  <input type="number" step="1" id="pcValue" value="15" required />
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Description</label>
+                <input type="text" id="pcDesc" placeholder="15% Gala Season Privilege" required />
+              </div>
+              <div class="form-group">
+                <label>Min Nights</label>
+                <input type="number" id="pcMinNights" value="2" min="1" required />
+              </div>
+              <div class="form-group" style="grid-column:span 2;">
+                <button type="submit" class="btn-outline-dark" style="width:100%;">+ Create Promotional Code</button>
+              </div>
+            </form>
           </div>
         </div>
       </div>
@@ -2685,7 +2940,10 @@
           cityLevyPerNight: Number(document.getElementById('setCityLevy').value),
           depositPercent: Number(document.getElementById('setDepositPercent').value),
           holdDurationMinutes: Number(document.getElementById('setHoldMins').value),
-          freeCancellationHours: Number(document.getElementById('setCancelHours').value)
+          freeCancellationHours: Number(document.getElementById('setCancelHours').value),
+          dynamicYieldEnabled: document.getElementById('setDynamicYieldEnabled').value === '1',
+          highDemandOccupancyThreshold: Number(document.getElementById('setYieldThreshold').value),
+          highDemandMultiplier: Number(document.getElementById('setYieldMultiplier').value)
         })
       });
       state.settings = res.settings;
@@ -2697,16 +2955,75 @@
     }
   }
 
+  async function handleCreateSeasonalRateSubmit(e) {
+    e.preventDefault();
+    try {
+      await apiFetch('/api/admin/seasonal-rates', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: document.getElementById('srName').value,
+          multiplier: Number(document.getElementById('srMultiplier').value),
+          startDate: document.getElementById('srStart').value,
+          endDate: document.getElementById('srEnd').value
+        })
+      });
+      await loadAdminTab('settings');
+      await performAvailabilitySearch();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function deleteSeasonalRateUI(id) {
+    try {
+      await apiFetch(`/api/admin/seasonal-rates/${id}`, { method: 'DELETE' });
+      await loadAdminTab('settings');
+      await performAvailabilitySearch();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleCreatePromoCodeSubmit(e) {
+    e.preventDefault();
+    try {
+      await apiFetch('/api/admin/promo-codes', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: document.getElementById('pcCode').value,
+          discountType: document.getElementById('pcType').value,
+          discountValue: Number(document.getElementById('pcValue').value),
+          description: document.getElementById('pcDesc').value,
+          minNights: Number(document.getElementById('pcMinNights').value)
+        })
+      });
+      await loadAdminTab('settings');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function deletePromoCodeUI(id) {
+    try {
+      await apiFetch(`/api/admin/promo-codes/${id}`, { method: 'DELETE' });
+      await loadAdminTab('settings');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   async function renderAdminAuditTab(container) {
-    const [auditData, usersData] = await Promise.all([
+    const [auditData, usersData, tplData, integrationsData] = await Promise.all([
       apiFetch('/api/admin/audit-logs?limit=40'),
-      apiFetch('/api/admin/users').catch(() => ({ users: [] }))
+      apiFetch('/api/admin/users').catch(() => ({ users: [] })),
+      apiFetch('/api/admin/templates').catch(() => ({ templates: [] })),
+      apiFetch('/api/admin/integrations').catch(() => ({ integrations: null }))
     ]);
 
     container.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:0.75rem;">
         <div>
-          <h4 style="font-family:var(--font-serif);font-size:1.35rem;">Immutable Audit Trail &amp; Disaster Recovery</h4>
+          <h4 style="font-family:var(--font-serif);font-size:1.35rem;">Immutable Audit Trail, RBAC, Templates &amp; Cloud Gateways</h4>
           <p style="font-size:0.82rem;color:#64748b;">Every reservation, checkout hold, cancellation, payment, refund, and admin change is logged.</p>
         </div>
         <button type="button" class="btn-primary" onclick="window.AureliaApp.triggerAdminDatabaseBackup()">
@@ -2716,8 +3033,42 @@
 
       <div id="backupStatusAlert" class="availability-box is-available hidden"></div>
 
+      <!-- ExternalCloudNotificationAndGatewayAdapters UI -->
+      ${integrationsData && integrationsData.paymentGateways ? `
+        <div class="kpi-card" style="margin-bottom:1.5rem;">
+          <h5 style="font-family:var(--font-serif);font-size:1.2rem;margin-bottom:0.5rem;">External Cloud Payment &amp; Messaging Adapter Status</h5>
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Adapter Mode</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${[...(integrationsData.paymentGateways || []), ...(integrationsData.messagingAdapters || [])].map((ad) => `
+                  <tr>
+                    <td><strong>${escapeHtml(ad.name)}</strong></td>
+                    <td><span class="status-pill ${ad.configured ? 'confirmed' : 'checked_in'}">${escapeHtml(ad.mode)}</span></td>
+                    <td><code>${escapeHtml(ad.status)}</code></td>
+                    <td>
+                      <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.verifyCloudAdapterHandshake('${escapeHtml(ad.id)}')">
+                        Verify Handshake
+                      </button>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- StaffRoleManagementUI -->
       ${usersData.users && usersData.users.length > 0 ? `
-        <h5 style="font-family:var(--font-serif);font-size:1.2rem;margin-bottom:0.5rem;">Staff &amp; Guest RBAC Directory</h5>
+        <h5 style="font-family:var(--font-serif);font-size:1.2rem;margin-bottom:0.5rem;">Staff &amp; Guest RBAC Directory (Role Management)</h5>
         <div class="data-table-wrapper" style="margin-bottom:1.75rem;">
           <table class="data-table">
             <thead>
@@ -2726,6 +3077,7 @@
                 <th>Email</th>
                 <th>Role (RBAC)</th>
                 <th>Loyalty Tier</th>
+                <th>Update Access</th>
               </tr>
             </thead>
             <tbody>
@@ -2733,12 +3085,42 @@
                 <tr>
                   <td><strong>${escapeHtml(u.first_name)} ${escapeHtml(u.last_name)}</strong></td>
                   <td>${escapeHtml(u.email)}</td>
-                  <td><span class="status-pill confirmed">${escapeHtml(u.role)}</span></td>
+                  <td>
+                    <select id="userRole_${u.id}" style="padding:0.25rem;font-size:0.78rem;">
+                      ${['guest', 'receptionist', 'finance', 'manager', 'admin'].map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${r}</option>`).join('')}
+                    </select>
+                  </td>
                   <td>${escapeHtml(u.loyalty_tier)} (${u.loyalty_points} pts)</td>
+                  <td>
+                    <button type="button" class="nearby-date-btn" onclick="window.AureliaApp.updateStaffRoleUI(${u.id})">Save Role</button>
+                  </td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
+        </div>
+      ` : ''}
+
+      <!-- NotificationTemplatesEditorUI -->
+      ${tplData.templates && tplData.templates.length > 0 ? `
+        <div class="kpi-card" style="margin-bottom:1.75rem;">
+          <h5 style="font-family:var(--font-serif);font-size:1.2rem;margin-bottom:0.65rem;">Transactional Notification Templates Editor</h5>
+          <div class="checkout-columns">
+            ${tplData.templates.map((t) => `
+              <form onsubmit="window.AureliaApp.saveNotificationTemplateUI(event, '${escapeHtml(t.code)}')" style="background:#f8fafc;padding:0.85rem;border:1px solid #e2e8f0;border-radius:6px;">
+                <div style="font-size:0.75rem;font-weight:700;color:#475569;margin-bottom:0.35rem;"><code>${escapeHtml(t.code)}</code> (${escapeHtml(t.channel)})</div>
+                <div class="form-group">
+                  <label>Subject Template</label>
+                  <input type="text" id="tplSubj_${escapeHtml(t.code)}" value="${escapeHtml(t.subject_template)}" required />
+                </div>
+                <div class="form-group">
+                  <label>Body Template</label>
+                  <textarea id="tplBody_${escapeHtml(t.code)}" rows="3" required>${escapeHtml(t.body_template)}</textarea>
+                </div>
+                <button type="submit" class="btn-outline-dark" style="padding:0.35rem 0.75rem;font-size:0.74rem;">Save Template</button>
+              </form>
+            `).join('')}
+          </div>
         </div>
       ` : ''}
 
@@ -2768,6 +3150,47 @@
         </table>
       </div>
     `;
+  }
+
+  async function updateStaffRoleUI(userId) {
+    try {
+      const role = document.getElementById(`userRole_${userId}`).value;
+      await apiFetch(`/api/admin/users/${userId}/role`, {
+        method: 'PATCH',
+        body: JSON.stringify({ role, isActive: true })
+      });
+      await loadAdminTab('audit');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function saveNotificationTemplateUI(e, code) {
+    e.preventDefault();
+    try {
+      await apiFetch(`/api/admin/templates/${encodeURIComponent(code)}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          subjectTemplate: document.getElementById(`tplSubj_${code}`).value,
+          bodyTemplate: document.getElementById(`tplBody_${code}`).value
+        })
+      });
+      await loadAdminTab('audit');
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function verifyCloudAdapterHandshake(adapterId) {
+    try {
+      const res = await apiFetch('/api/admin/integrations/test', {
+        method: 'POST',
+        body: JSON.stringify({ adapterId })
+      });
+      alert(`${res.adapterName} (${res.mode}) — ${res.status.toUpperCase()} (${res.traceId})\nLatency: ${res.latencyMs}ms`);
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   async function triggerAdminDatabaseBackup() {
@@ -2821,6 +3244,9 @@
     submitUpdateSpecialRequests,
     submitPreArrivalDossier,
     submitVerifiedStayReview,
+    submitFacilitySlotBooking,
+    cancelFacilitySlotUI,
+    voidFolioChargeUI,
     handleLoginSubmit,
     handleRegisterSubmit,
     logout,
@@ -2838,7 +3264,15 @@
     deletePhysicalRoom,
     handleCreateMaintenanceSubmit,
     removeMaintenanceBlock,
+    handleImportIcalSubmit,
     handleSaveSettingsSubmit,
+    handleCreateSeasonalRateSubmit,
+    deleteSeasonalRateUI,
+    handleCreatePromoCodeSubmit,
+    deletePromoCodeUI,
+    updateStaffRoleUI,
+    saveNotificationTemplateUI,
+    verifyCloudAdapterHandshake,
     triggerAdminDatabaseBackup
   };
 

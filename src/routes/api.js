@@ -21,7 +21,8 @@ const {
   addDays,
   getRoomAvailabilityStrip,
   getFrontDeskTapeChart,
-  generateRoomIcalFeed
+  generateRoomIcalFeed,
+  importRoomIcalFeed
 } = require('../services/availabilityService');
 const {
   createCheckoutHold,
@@ -33,7 +34,9 @@ const {
   savePreArrivalDossier,
   addFolioCharge,
   removeFolioCharge,
-  submitGuestReview
+  submitGuestReview,
+  bookFacilitySlot,
+  cancelFacilitySlot
 } = require('../services/bookingService');
 const {
   createPaymentToken,
@@ -43,6 +46,7 @@ const {
 } = require('../services/paymentService');
 const { sendNotification } = require('../services/notificationService');
 const { logAudit, getAuditLogs } = require('../services/auditService');
+const { getCloudAdapterStatus, testCloudAdapterHandshake } = require('../services/cloudAdapters');
 
 const router = express.Router();
 
@@ -62,7 +66,7 @@ router.get('/config', (req, res) => {
   const settings = getHotelSettings();
   const addons = db.prepare('SELECT * FROM addons WHERE is_active = 1 ORDER BY id ASC').all();
   const promos = db.prepare(`
-    SELECT code, description, discount_type, discount_value, min_nights, min_amount, valid_until
+    SELECT id, code, description, discount_type, discount_value, min_nights, min_amount, valid_until
     FROM promo_codes WHERE is_active = 1
   `).all();
   const seasonalRates = db.prepare('SELECT * FROM seasonal_rates WHERE is_active = 1 ORDER BY start_date ASC').all();
@@ -698,6 +702,80 @@ router.post('/bookings/:bookingReference/review', (req, res) => {
     res.status(201).json({ reservation: updated, review: updated.guestReview });
   } catch (err) {
     res.status(400).json({ error: err.code || 'REVIEW_SUBMIT_FAILED', message: err.message });
+  }
+});
+
+// DiningAndSpaSlotBookingModule Endpoints
+router.get('/bookings/:bookingReference/facilities', (req, res) => {
+  const reservation = getReservationByReference(req.params.bookingReference);
+  if (!reservation) {
+    return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+  }
+  res.json({ facilityBookings: reservation.facilityBookings || [] });
+});
+
+router.post('/bookings/:bookingReference/facilities', (req, res) => {
+  try {
+    const reservation = getReservationByReference(req.params.bookingReference);
+    if (!reservation) {
+      return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+    }
+    const isStaff = req.user && ['receptionist', 'finance', 'manager', 'admin'].includes(req.user.role);
+    const isOwnerUser = req.user && (req.user.id === reservation.user_id || req.user.email.toLowerCase() === reservation.guest_email.toLowerCase());
+    const matchesBodyEmail = req.body.email && String(req.body.email).trim().toLowerCase() === reservation.guest_email.toLowerCase();
+
+    if (!isStaff && !isOwnerUser && !matchesBodyEmail) {
+      return res.status(403).json({
+        error: 'UNAUTHORIZED_FACILITY_BOOKING',
+        message: 'Please verify your reservation email address or sign in to reserve dining or thermal spa slots.'
+      });
+    }
+
+    const updated = bookFacilitySlot({
+      bookingReference: reservation.booking_reference,
+      facilityType: req.body.facilityType || 'michelin_dining',
+      reservationDate: req.body.reservationDate || reservation.check_in,
+      slotTime: req.body.slotTime || '19:30',
+      guestsCount: req.body.guestsCount || reservation.adults,
+      treatmentOrMenu: req.body.treatmentOrMenu || 'Seven-Course Michelin Tasting Menu',
+      price: req.body.price !== undefined ? Number(req.body.price) : 0,
+      actorEmail: req.user ? req.user.email : reservation.guest_email,
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({
+      reservation: updated,
+      facilityBookings: updated.facilityBookings
+    });
+  } catch (err) {
+    const status = err.code === 'FACILITY_SLOT_ALREADY_BOOKED' ? 409 : 400;
+    res.status(status).json({ error: err.code || 'FACILITY_BOOKING_FAILED', message: err.message });
+  }
+});
+
+router.delete('/bookings/:bookingReference/facilities/:slotId', (req, res) => {
+  try {
+    const reservation = getReservationByReference(req.params.bookingReference);
+    if (!reservation) {
+      return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+    }
+    const isStaff = req.user && ['receptionist', 'finance', 'manager', 'admin'].includes(req.user.role);
+    const isOwnerUser = req.user && (req.user.id === reservation.user_id || req.user.email.toLowerCase() === reservation.guest_email.toLowerCase());
+    const matchesEmail = (req.query.email || req.body?.email || '').toLowerCase() === reservation.guest_email.toLowerCase();
+
+    if (!isStaff && !isOwnerUser && !matchesEmail) {
+      return res.status(403).json({ error: 'FORBIDDEN', message: 'Verification required to cancel facility slot.' });
+    }
+
+    const updated = cancelFacilitySlot({
+      bookingReference: reservation.booking_reference,
+      slotId: Number(req.params.slotId),
+      actorEmail: req.user ? req.user.email : reservation.guest_email,
+      ipAddress: req.ip
+    });
+    res.json({ reservation: updated, facilityBookings: updated.facilityBookings });
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'FACILITY_CANCEL_FAILED', message: err.message });
   }
 });
 
@@ -1421,6 +1499,22 @@ router.delete('/admin/maintenance/:id', requireRoles('receptionist', 'manager', 
   res.json({ cancelled: true });
 });
 
+// InboundIcalChannelSyncModule Endpoint
+router.post('/admin/rooms/:id/ical-import', requireRoles('manager', 'admin'), (req, res) => {
+  try {
+    const result = importRoomIcalFeed({
+      roomId: Number(req.params.id),
+      icsContent: req.body.icsContent,
+      channelName: req.body.channelName || 'External Luxury Desk / OTA',
+      createdBy: `${req.user.first_name} ${req.user.last_name} (${req.user.role})`,
+      ipAddress: req.ip
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'ICAL_IMPORT_FAILED', message: err.message });
+  }
+});
+
 // Admin Reservations, Walk-In Creation, Check-In/Out, Payment Confirmation & Refunds
 router.get('/admin/reservations', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
   const db = getDb();
@@ -1785,7 +1879,13 @@ router.post('/admin/promo-codes', requireRoles('finance', 'manager', 'admin'), (
   }
 });
 
-// Hotel Settings Configuration
+router.delete('/admin/promo-codes/:id', requireRoles('finance', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  db.prepare('DELETE FROM promo_codes WHERE id = ?').run(Number(req.params.id));
+  res.json({ deleted: true });
+});
+
+// Hotel Settings Configuration (including DynamicYieldPricingModule)
 router.put('/admin/settings', requireRoles('finance', 'manager', 'admin'), (req, res) => {
   const db = getDb();
   const current = getHotelSettings();
@@ -1805,7 +1905,10 @@ router.put('/admin/settings', requireRoles('finance', 'manager', 'admin'), (req,
     holdDurationMinutes = current.hold_duration_minutes,
     freeCancellationHours = current.free_cancellation_hours,
     lateCancellationPenaltyPercent = current.late_cancellation_penalty_percent,
-    allowPayAtHotel = current.allow_pay_at_hotel
+    allowPayAtHotel = current.allow_pay_at_hotel,
+    dynamicYieldEnabled = current.dynamic_yield_enabled,
+    highDemandOccupancyThreshold = current.high_demand_occupancy_threshold,
+    highDemandMultiplier = current.high_demand_multiplier
   } = req.body;
 
   db.prepare(`
@@ -1815,6 +1918,7 @@ router.put('/admin/settings', requireRoles('finance', 'manager', 'admin'), (req,
         tax_rate_percent = ?, service_fee_percent = ?, city_levy_per_night = ?,
         deposit_percent = ?, hold_duration_minutes = ?, free_cancellation_hours = ?,
         late_cancellation_penalty_percent = ?, allow_pay_at_hotel = ?,
+        dynamic_yield_enabled = ?, high_demand_occupancy_threshold = ?, high_demand_multiplier = ?,
         updated_at = datetime('now')
     WHERE id = 1
   `).run(
@@ -1832,7 +1936,10 @@ router.put('/admin/settings', requireRoles('finance', 'manager', 'admin'), (req,
     Number(holdDurationMinutes),
     Number(freeCancellationHours),
     Number(lateCancellationPenaltyPercent),
-    allowPayAtHotel ? 1 : 0
+    allowPayAtHotel ? 1 : 0,
+    dynamicYieldEnabled ? 1 : 0,
+    Number(highDemandOccupancyThreshold ?? 75.0),
+    Number(highDemandMultiplier ?? 1.15)
   );
 
   const updated = getHotelSettings();
@@ -1976,6 +2083,27 @@ router.post('/admin/backup', requireRoles('admin'), (req, res) => {
     res.json({ backup: info });
   } catch (err) {
     res.status(500).json({ error: 'BACKUP_FAILED', message: err.message });
+  }
+});
+
+// ExternalCloudNotificationAndGatewayAdapters Endpoints
+router.get('/admin/integrations', requireRoles('finance', 'manager', 'admin'), (_req, res) => {
+  res.json(getCloudAdapterStatus());
+});
+
+router.post('/admin/integrations/test', requireRoles('manager', 'admin'), (req, res) => {
+  try {
+    const result = testCloudAdapterHandshake({
+      adapterId: req.body.adapterId,
+      testRecipient: req.body.testRecipient || req.user.email,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      actorEmail: req.user.email,
+      ipAddress: req.ip
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'ADAPTER_TEST_FAILED', message: err.message });
   }
 });
 

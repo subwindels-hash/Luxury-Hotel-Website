@@ -733,4 +733,221 @@ describe('Maison Aurélia Luxury Hotel & Online Reservation Platform — End-to-
     assert.equal(revRes.status, 201);
     assert.equal(revRes.data.review.rating, 5);
   });
+
+  it('14. Books Michelin Dining & Thermal Spa slots with collision protection, auto-posts folio charges, and voids folio charges', async () => {
+    const adminLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'admin@maisonaurelia.luxury',
+      password: 'AureliaAdmin!2026'
+    });
+    const adminToken = adminLogin.data.token;
+
+    const cat = await reqJson('GET', '/api/catalogue');
+    const room301 = cat.data.rooms.find((r) => r.roomNumber === '301');
+
+    const bookRes = await reqJson('POST', '/api/bookings', {
+      roomIds: [room301.id],
+      checkIn: '2027-05-10',
+      checkOut: '2027-05-13',
+      adults: 2,
+      guestFirstName: 'Camille',
+      guestLastName: 'Laurent',
+      guestEmail: 'camille.laurent@example.com',
+      guestPhone: '+33 6 11 22 33 44',
+      paymentMethod: 'pay_at_hotel'
+    });
+    assert.equal(bookRes.status, 201);
+    const ref = bookRes.data.bookingReference;
+
+    // 1. Reserve a Michelin Dining time slot ($240)
+    const slotRes = await reqJson('POST', `/api/bookings/${ref}/facilities`, {
+      email: 'camille.laurent@example.com',
+      facilityType: 'michelin_dining',
+      reservationDate: '2027-05-11',
+      slotTime: '19:30',
+      guestsCount: 2,
+      treatmentOrMenu: 'Chef Tasting Table & Krug Pairing',
+      price: 240
+    });
+    assert.equal(slotRes.status, 201);
+    assert.equal(slotRes.data.reservation.facilityBookings.length, 1);
+    assert.equal(slotRes.data.reservation.incidentalTotal, 240);
+
+    // 2. Attempting to book the exact same venue, date, and time slot is rejected with 409 FACILITY_SLOT_ALREADY_BOOKED
+    const dupSlot = await reqJson('POST', `/api/bookings/${ref}/facilities`, {
+      email: 'camille.laurent@example.com',
+      facilityType: 'michelin_dining',
+      reservationDate: '2027-05-11',
+      slotTime: '19:30',
+      guestsCount: 2,
+      treatmentOrMenu: 'Second Table Request',
+      price: 240
+    });
+    assert.equal(dupSlot.status, 409);
+    assert.equal(dupSlot.data.error, 'FACILITY_SLOT_ALREADY_BOOKED');
+
+    // 3. Void the incidental folio charge via Admin API
+    const folioId = slotRes.data.reservation.folioCharges[0].id;
+    const voidRes = await reqJson(
+      'DELETE',
+      `/api/admin/reservations/${ref}/folio/${folioId}`,
+      null,
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(voidRes.status, 200);
+    assert.equal(voidRes.data.reservation.incidentalTotal, 0);
+
+    // 4. Cancel the facility slot
+    const slotId = slotRes.data.reservation.facilityBookings[0].id;
+    const cancelSlotRes = await reqJson(
+      'DELETE',
+      `/api/bookings/${ref}/facilities/${slotId}?email=camille.laurent%40example.com`
+    );
+    assert.equal(cancelSlotRes.status, 200);
+    assert.equal(cancelSlotRes.data.reservation.facilityBookings.length, 0);
+  });
+
+  it('15. Applies Dynamic Occupancy-Threshold Yield Pricing and imports inbound RFC 5545 iCal (.ics) channel feeds', async () => {
+    const adminLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'admin@maisonaurelia.luxury',
+      password: 'AureliaAdmin!2026'
+    });
+    const adminToken = adminLogin.data.token;
+
+    const cat = await reqJson('GET', '/api/catalogue');
+    // Standard Courtyard Queen has 2 rooms (#101 and #102)
+    const room101 = cat.data.rooms.find((r) => r.roomNumber === '101');
+    const room102 = cat.data.rooms.find((r) => r.roomNumber === '102');
+
+    // Configure dynamic yield: 50% threshold, 1.20x high-demand multiplier
+    const setRes = await reqJson(
+      'PUT',
+      '/api/admin/settings',
+      {
+        dynamicYieldEnabled: true,
+        highDemandOccupancyThreshold: 50,
+        highDemandMultiplier: 1.20
+      },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(setRes.status, 200);
+
+    // Book Room #101 for 2027-06-10 -> 2027-06-12 (now 1 of 2 rooms in category is booked = 50% occupancy)
+    const b1 = await reqJson('POST', '/api/bookings', {
+      roomIds: [room101.id],
+      checkIn: '2027-06-10',
+      checkOut: '2027-06-12',
+      adults: 2,
+      guestFirstName: 'Yield',
+      guestLastName: 'Tester',
+      guestEmail: 'yield@example.com',
+      guestPhone: '+41 22 000 0000',
+      paymentMethod: 'pay_at_hotel'
+    });
+    assert.equal(b1.status, 201);
+
+    // Now check availability & pricing for Room #102 on 2027-06-10 -> 2027-06-12: dynamic yield (1.20x) must be active!
+    const check102 = await reqJson('GET', `/api/rooms/${room102.id}?checkIn=2027-06-10&checkOut=2027-06-12`);
+    assert.equal(check102.status, 200);
+    assert.equal(check102.data.availability.available, true);
+    assert.ok(
+      check102.data.availability.pricing.roomBreakdowns[0].seasonBadges.includes('High-Demand Yield (+20%)')
+    );
+    assert.ok(
+      check102.data.availability.pricing.roomBreakdowns[0].effectiveNightlyRate >
+      check102.data.availability.pricing.roomBreakdowns[0].baseNightlyRate
+    );
+
+    // Inbound iCal (.ics) Channel Sync Import on Room #102 for 2027-07-01 -> 2027-07-04
+    const icsPayload = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'DTSTART;VALUE=DATE:20270701',
+      'DTEND;VALUE=DATE:20270704',
+      'SUMMARY:Virtuoso Channel Reservation',
+      'END:VEVENT',
+      'END:VCALENDAR'
+    ].join('\r\n');
+
+    const importRes = await reqJson(
+      'POST',
+      `/api/admin/rooms/${room102.id}/ical-import`,
+      { channelName: 'Virtuoso OTA', icsContent: icsPayload },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(importRes.status, 201);
+    assert.equal(importRes.data.importedCount, 1);
+
+    // Verify Room #102 is now blocked on 2027-07-01 -> 2027-07-04
+    const afterImport = await reqJson('GET', `/api/rooms/${room102.id}?checkIn=2027-07-01&checkOut=2027-07-04`);
+    assert.equal(afterImport.data.availability.available, false);
+  });
+
+  it('16. Verifies Admin CRUD for Seasonal Rates, Promo Codes, Notification Templates, Staff Roles, and Cloud Adapter Handshakes', async () => {
+    const adminLogin = await reqJson('POST', '/api/auth/login', {
+      email: 'admin@maisonaurelia.luxury',
+      password: 'AureliaAdmin!2026'
+    });
+    const adminToken = adminLogin.data.token;
+
+    // 1. Create & Delete Seasonal Rate
+    const srCreate = await reqJson(
+      'POST',
+      '/api/admin/seasonal-rates',
+      { name: 'Autumn Regatta', startDate: '2027-09-01', endDate: '2027-09-10', multiplier: 1.25 },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(srCreate.status, 201);
+    const srDel = await reqJson(
+      'DELETE',
+      `/api/admin/seasonal-rates/${srCreate.data.seasonalRate.id}`,
+      null,
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(srDel.status, 200);
+
+    // 2. Create & Delete Promo Code
+    const pcCreate = await reqJson(
+      'POST',
+      '/api/admin/promo-codes',
+      { code: 'REGATTA20', description: '20% Regatta Privilege', discountType: 'percent', discountValue: 20, minNights: 2 },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(pcCreate.status, 201);
+    const pcDel = await reqJson(
+      'DELETE',
+      `/api/admin/promo-codes/${pcCreate.data.promoCode.id}`,
+      null,
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(pcDel.status, 200);
+
+    // 3. Update Notification Template
+    const tplUpdate = await reqJson(
+      'PUT',
+      '/api/admin/templates/BOOKING_CONFIRMED',
+      {
+        subjectTemplate: 'Maison Aurélia — Confirmed Dossier {{bookingReference}}',
+        bodyTemplate: 'Dear {{guestName}}, your reservation {{bookingReference}} ({{checkIn}} to {{checkOut}}) is confirmed.'
+      },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(tplUpdate.status, 200);
+
+    // 4. Cloud Adapter Status & Handshake Test
+    const intStatus = await reqJson('GET', '/api/admin/integrations', null, {
+      Authorization: `Bearer ${adminToken}`
+    });
+    assert.equal(intStatus.status, 200);
+    assert.ok(intStatus.data.paymentGateways.length >= 2);
+
+    const handshake = await reqJson(
+      'POST',
+      '/api/admin/integrations/test',
+      { adapterId: 'stripe' },
+      { Authorization: `Bearer ${adminToken}` }
+    );
+    assert.equal(handshake.status, 200);
+    assert.equal(handshake.data.status, 'verified');
+  });
 });

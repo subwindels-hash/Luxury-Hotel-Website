@@ -94,6 +94,9 @@ function createSchema(db) {
       free_cancellation_hours INTEGER NOT NULL DEFAULT 48,
       late_cancellation_penalty_percent REAL NOT NULL DEFAULT 50.0,
       allow_pay_at_hotel INTEGER NOT NULL DEFAULT 1,
+      dynamic_yield_enabled INTEGER NOT NULL DEFAULT 1,
+      high_demand_occupancy_threshold REAL NOT NULL DEFAULT 75.0,
+      high_demand_multiplier REAL NOT NULL DEFAULT 1.15,
       contact_email TEXT NOT NULL DEFAULT 'concierge@maisonaurelia.luxury',
       contact_phone TEXT NOT NULL DEFAULT '+41 22 819 0000',
       address TEXT NOT NULL DEFAULT '18 Quai du Mont-Blanc, Waterfront Sanctuary Quarter',
@@ -434,6 +437,22 @@ function createSchema(db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS facility_bookings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      reservation_id INTEGER NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+      booking_reference TEXT NOT NULL,
+      facility_type TEXT NOT NULL CHECK (facility_type IN ('michelin_dining', 'thermal_spa', 'private_cinema', 'yacht_charter')),
+      facility_name TEXT NOT NULL,
+      reservation_date TEXT NOT NULL,
+      slot_time TEXT NOT NULL,
+      guests_count INTEGER NOT NULL DEFAULT 2 CHECK (guests_count >= 1),
+      treatment_or_menu TEXT NOT NULL,
+      price REAL NOT NULL DEFAULT 0 CHECK (price >= 0),
+      folio_charge_id INTEGER REFERENCES folio_charges(id) ON DELETE SET NULL,
+      status TEXT NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed', 'cancelled')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_res_rooms_lookup ON reservation_rooms(room_id, status, check_in, check_out);
     CREATE INDEX IF NOT EXISTS idx_holds_lookup ON room_holds(room_id, status, expires_at, check_in, check_out);
     CREATE INDEX IF NOT EXISTS idx_maint_lookup ON maintenance_blocks(room_id, status, start_date, end_date);
@@ -562,12 +581,18 @@ function createSchema(db) {
     END;
   `);
 
-  // Safe migration for existing databases created prior to housekeeping columns
+  // Safe migration for existing databases created prior to housekeeping or dynamic yield columns
   try {
     const cols = db.prepare("PRAGMA table_info('rooms')").all();
     if (!cols.some((c) => c.name === 'housekeeping_status')) {
       db.exec("ALTER TABLE rooms ADD COLUMN housekeeping_status TEXT NOT NULL DEFAULT 'clean_inspected';");
       db.exec("ALTER TABLE rooms ADD COLUMN housekeeping_updated_at TEXT NOT NULL DEFAULT (datetime('now'));");
+    }
+    const settingCols = db.prepare("PRAGMA table_info('hotel_settings')").all();
+    if (!settingCols.some((c) => c.name === 'dynamic_yield_enabled')) {
+      db.exec('ALTER TABLE hotel_settings ADD COLUMN dynamic_yield_enabled INTEGER NOT NULL DEFAULT 1;');
+      db.exec('ALTER TABLE hotel_settings ADD COLUMN high_demand_occupancy_threshold REAL NOT NULL DEFAULT 75.0;');
+      db.exec('ALTER TABLE hotel_settings ADD COLUMN high_demand_multiplier REAL NOT NULL DEFAULT 1.15;');
     }
   } catch (_) {}
 }
