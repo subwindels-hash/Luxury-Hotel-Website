@@ -1,0 +1,1982 @@
+const express = require('express');
+const { getDb, backupDatabase } = require('../db/database');
+const {
+  hashPassword,
+  verifyPassword,
+  createAuthToken,
+  optionalAuth,
+  requireAuth,
+  requireRoles
+} = require('../middleware/auth');
+const { generateCsrfToken } = require('../middleware/security');
+const {
+  CURRENCY_RATES,
+  releaseExpiredHolds,
+  getHotelSettings,
+  checkSingleRoomAvailability,
+  calculateStayPricing,
+  formatRoomRecord,
+  searchAvailability,
+  roundMoney,
+  addDays,
+  getRoomAvailabilityStrip,
+  getFrontDeskTapeChart,
+  generateRoomIcalFeed
+} = require('../services/availabilityService');
+const {
+  createCheckoutHold,
+  releaseHold,
+  confirmReservation,
+  getReservationByReference,
+  cancelReservation,
+  modifyReservationDates,
+  savePreArrivalDossier,
+  addFolioCharge,
+  removeFolioCharge,
+  submitGuestReview
+} = require('../services/bookingService');
+const {
+  createPaymentToken,
+  processPaymentWebhook,
+  generatePaymentReference,
+  generateInvoiceNumber
+} = require('../services/paymentService');
+const { sendNotification } = require('../services/notificationService');
+const { logAudit, getAuditLogs } = require('../services/auditService');
+
+const router = express.Router();
+
+router.use(optionalAuth);
+
+// ---------------------------------------------------------------------------
+// 1. Public Configuration, CSRF, & Catalogue Endpoints
+// ---------------------------------------------------------------------------
+
+router.get('/csrf-token', (req, res) => {
+  const token = generateCsrfToken(req.user ? String(req.user.id) : 'guest');
+  res.json({ csrfToken: token });
+});
+
+router.get('/config', (req, res) => {
+  const db = getDb();
+  const settings = getHotelSettings();
+  const addons = db.prepare('SELECT * FROM addons WHERE is_active = 1 ORDER BY id ASC').all();
+  const promos = db.prepare(`
+    SELECT code, description, discount_type, discount_value, min_nights, min_amount, valid_until
+    FROM promo_codes WHERE is_active = 1
+  `).all();
+  const seasonalRates = db.prepare('SELECT * FROM seasonal_rates WHERE is_active = 1 ORDER BY start_date ASC').all();
+
+  res.json({
+    settings,
+    currencies: CURRENCY_RATES,
+    addons,
+    promoCodes: promos,
+    seasonalRates,
+    csrfToken: generateCsrfToken(req.user ? String(req.user.id) : 'guest')
+  });
+});
+
+router.get('/catalogue', (req, res) => {
+  releaseExpiredHolds();
+  const db = getDb();
+  const settings = getHotelSettings();
+  const categories = db.prepare('SELECT * FROM room_categories ORDER BY sort_order ASC, id ASC').all();
+  const rooms = db.prepare(`
+    SELECT r.*, c.name AS category_name, c.slug AS category_slug
+    FROM rooms r
+    JOIN room_categories c ON c.id = r.category_id
+    ORDER BY c.sort_order ASC, r.room_number ASC
+  `).all();
+
+  const formattedRooms = rooms.map((r) => formatRoomRecord(r));
+  const formattedCategories = categories.map((cat) => {
+    const catRooms = formattedRooms.filter((r) => r.categoryId === cat.id);
+    return {
+      id: cat.id,
+      slug: cat.slug,
+      name: cat.name,
+      shortDescription: cat.short_description,
+      description: cat.description,
+      basePrice: cat.base_price,
+      maxAdults: cat.max_adults,
+      maxChildren: cat.max_children,
+      maxOccupancy: cat.max_occupancy,
+      bedType: cat.bed_type,
+      sizeSqm: cat.size_sqm,
+      sizeSqft: cat.size_sqft,
+      heroImage: cat.hero_image,
+      gallery: JSON.parse(cat.gallery_json || '[]'),
+      amenities: JSON.parse(cat.amenities_json || '[]'),
+      facilities: JSON.parse(cat.facilities_json || '[]'),
+      includedServices: JSON.parse(cat.included_services_json || '[]'),
+      checkInPolicy: cat.check_in_policy,
+      checkOutPolicy: cat.check_out_policy,
+      cancellationPolicy: cat.cancellation_policy,
+      refundPolicy: cat.refund_policy,
+      isFeatured: Boolean(cat.is_featured),
+      totalRooms: catRooms.length,
+      activeRooms: catRooms.filter((r) => r.status === 'available').length,
+      rooms: catRooms
+    };
+  });
+
+  res.json({
+    environmentMode: settings.environment_mode,
+    environmentBanner: settings.environment_banner,
+    categories: formattedCategories,
+    rooms: formattedRooms
+  });
+});
+
+router.get('/rooms/:id', (req, res) => {
+  releaseExpiredHolds();
+  const db = getDb();
+  const roomId = Number(req.params.id);
+  const room = db.prepare(`
+    SELECT r.*, c.name AS category_name, c.slug AS category_slug
+    FROM rooms r
+    JOIN room_categories c ON c.id = r.category_id
+    WHERE r.id = ?
+  `).get(roomId);
+
+  if (!room) {
+    return res.status(404).json({ error: 'ROOM_NOT_FOUND', message: 'Room not found.' });
+  }
+
+  const formatted = formatRoomRecord(room);
+
+  // Anonymized unavailable ranges for room calendar display
+  const bookedRanges = db.prepare(`
+    SELECT rr.check_in AS startDate, rr.check_out AS endDate, 'booked' AS type
+    FROM reservation_rooms rr
+    JOIN reservations res ON res.id = rr.reservation_id
+    WHERE rr.room_id = ? AND rr.status = 'active' AND res.status IN ('confirmed', 'checked_in')
+    ORDER BY rr.check_in ASC
+  `).all(roomId);
+
+  const maintenanceRanges = db.prepare(`
+    SELECT start_date AS startDate, end_date AS endDate, 'maintenance' AS type, reason
+    FROM maintenance_blocks
+    WHERE room_id = ? AND status = 'active'
+    ORDER BY start_date ASC
+  `).all(roomId);
+
+  const holdRanges = db.prepare(`
+    SELECT check_in AS startDate, check_out AS endDate, 'held' AS type, expires_at AS expiresAt
+    FROM room_holds
+    WHERE room_id = ? AND status = 'ACTIVE' AND expires_at > datetime('now')
+  `).all(roomId);
+
+  let availability = null;
+  if (req.query.checkIn && req.query.checkOut) {
+    try {
+      const check = checkSingleRoomAvailability(roomId, req.query.checkIn, req.query.checkOut, req.query.sessionId);
+      const pricing = calculateStayPricing({
+        roomIds: [roomId],
+        checkIn: req.query.checkIn,
+        checkOut: req.query.checkOut,
+        adults: Number(req.query.adults || 2),
+        children: Number(req.query.children || 0),
+        currency: req.query.currency || 'USD'
+      });
+      availability = {
+        ...check,
+        heading: check.available ? 'Room Available' : 'Room Unavailable for Selected Dates',
+        message: check.available
+          ? 'This room is available for your selected dates. You can proceed with your reservation.'
+          : 'Sorry, this room has already been booked or is unavailable for part or all of your selected stay. Please choose different dates or explore other available rooms.',
+        pricing
+      };
+    } catch (err) {
+      availability = { error: err.message };
+    }
+  }
+
+  const availabilityStrip = getRoomAvailabilityStrip({
+    roomId,
+    startDate: req.query.checkIn || new Date().toISOString().slice(0, 10),
+    days: 14,
+    currency: req.query.currency || 'USD'
+  });
+
+  const reviews = db.prepare(`
+    SELECT * FROM guest_reviews
+    WHERE room_id = ? OR room_number = ?
+    ORDER BY id DESC LIMIT 10
+  `).all(roomId, room.room_number);
+
+  res.json({
+    room: formatted,
+    unavailableRanges: [...bookedRanges, ...maintenanceRanges, ...holdRanges],
+    availability,
+    availabilityStrip,
+    reviews
+  });
+});
+
+router.get('/rooms/:id/availability-strip', (req, res) => {
+  const stripData = getRoomAvailabilityStrip({
+    roomId: Number(req.params.id),
+    startDate: req.query.startDate || null,
+    days: Number(req.query.days || 14),
+    currency: req.query.currency || 'USD'
+  });
+  if (!stripData) {
+    return res.status(404).json({ error: 'ROOM_NOT_FOUND', message: 'Room not found.' });
+  }
+  res.json(stripData);
+});
+
+router.get('/rooms/:id/calendar.ics', (req, res) => {
+  const ics = generateRoomIcalFeed(Number(req.params.id));
+  if (!ics) {
+    return res.status(404).json({ error: 'ROOM_NOT_FOUND', message: 'Room not found.' });
+  }
+  res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="maison-aurelia-room-${req.params.id}.ics"`);
+  res.send(ics);
+});
+
+router.get('/reviews', (req, res) => {
+  const db = getDb();
+  const reviews = db.prepare('SELECT * FROM guest_reviews ORDER BY id DESC LIMIT 20').all();
+  res.json({ reviews });
+});
+
+// ---------------------------------------------------------------------------
+// 2. Real-Time Availability & Dynamic Pricing Endpoints
+// ---------------------------------------------------------------------------
+
+function handleAvailabilitySearch(req, res) {
+  try {
+    const src = req.method === 'POST' ? req.body : req.query;
+    const today = new Date().toISOString().slice(0, 10);
+    const defaultOut = addDays(today, 3);
+
+    const result = searchAvailability({
+      checkIn: src.checkIn || today,
+      checkOut: src.checkOut || defaultOut,
+      adults: src.adults !== undefined ? Number(src.adults) : 2,
+      children: src.children !== undefined ? Number(src.children) : 0,
+      roomsRequired: src.roomsRequired !== undefined ? Number(src.roomsRequired) : 1,
+      categorySlug: src.categorySlug || null,
+      currency: src.currency || 'USD',
+      sessionId: src.sessionId || null
+    });
+
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({
+      error: err.code || 'AVAILABILITY_SEARCH_ERROR',
+      message: err.message
+    });
+  }
+}
+
+router.get('/availability', handleAvailabilitySearch);
+router.post('/availability/search', handleAvailabilitySearch);
+
+router.post('/pricing/calculate', (req, res) => {
+  try {
+    const {
+      roomIds = [],
+      checkIn,
+      checkOut,
+      adults = 2,
+      children = 0,
+      selectedAddons = [],
+      promoCode = '',
+      paymentPlan = 'full',
+      currency = 'USD'
+    } = req.body;
+
+    const pricing = calculateStayPricing({
+      roomIds: Array.isArray(roomIds) ? roomIds.map(Number) : [Number(roomIds)],
+      checkIn,
+      checkOut,
+      adults,
+      children,
+      selectedAddons,
+      promoCode,
+      paymentPlan,
+      currency
+    });
+
+    res.json({ pricing });
+  } catch (err) {
+    res.status(400).json({
+      error: err.code || 'PRICING_ERROR',
+      message: err.message
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 3. Checkout Inventory Holds, Tokenisation & Atomic Booking Endpoints
+// ---------------------------------------------------------------------------
+
+router.post('/holds', (req, res) => {
+  try {
+    const {
+      roomIds,
+      roomId,
+      checkIn,
+      checkOut,
+      adults = 2,
+      children = 0,
+      sessionId,
+      customHoldSeconds
+    } = req.body;
+
+    const ids = Array.isArray(roomIds) ? roomIds : roomId ? [roomId] : [];
+    const hold = createCheckoutHold({
+      roomIds: ids,
+      checkIn,
+      checkOut,
+      adults,
+      children,
+      sessionId,
+      userId: req.user ? req.user.id : null,
+      customHoldSeconds,
+      ipAddress: req.ip
+    });
+
+    res.status(201).json(hold);
+  } catch (err) {
+    const status = err.code === 'ROOM_UNAVAILABLE' || String(err.message).includes('HOLD_CONFLICT') ? 409 : 400;
+    res.status(status).json({
+      error: err.code || 'HOLD_CREATION_FAILED',
+      message: err.message,
+      reason: err.reason || null,
+      conflictDetails: err.conflictDetails || null
+    });
+  }
+});
+
+router.delete('/holds/:holdToken', (req, res) => {
+  const result = releaseHold(req.params.holdToken, req.query.sessionId || null);
+  res.json(result);
+});
+
+router.post('/payments/tokenise', (req, res) => {
+  try {
+    const tokenData = createPaymentToken(req.body);
+    res.status(201).json(tokenData);
+  } catch (err) {
+    res.status(400).json({
+      error: err.code || 'TOKENISATION_ERROR',
+      message: err.message
+    });
+  }
+});
+
+router.post('/bookings', (req, res) => {
+  try {
+    const {
+      roomIds,
+      roomId,
+      checkIn,
+      checkOut,
+      adults = 2,
+      children = 0,
+      guestFirstName,
+      guestLastName,
+      guestEmail,
+      guestPhone,
+      guestCountry = '',
+      specialRequests = '',
+      selectedAddons = [],
+      promoCode = '',
+      paymentMethod = 'card',
+      paymentPlan = 'full',
+      paymentToken = '',
+      cardBrand = '',
+      cardLast4 = '',
+      bankReference = '',
+      currency = 'USD',
+      holdToken = '',
+      sessionId = ''
+    } = req.body;
+
+    const ids = Array.isArray(roomIds) ? roomIds : roomId ? [roomId] : [];
+    const reservation = confirmReservation({
+      roomIds: ids,
+      checkIn,
+      checkOut,
+      adults,
+      children,
+      guestFirstName,
+      guestLastName,
+      guestEmail,
+      guestPhone,
+      guestCountry,
+      specialRequests,
+      selectedAddons,
+      promoCode,
+      paymentMethod,
+      paymentPlan,
+      paymentToken,
+      cardBrand,
+      cardLast4,
+      bankReference,
+      currency,
+      holdToken,
+      sessionId,
+      userId: req.user ? req.user.id : null,
+      bookingSource: 'online',
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({
+      confirmed: true,
+      bookingReference: reservation.booking_reference,
+      reservation
+    });
+  } catch (err) {
+    const isConflict =
+      err.code === 'AVAILABILITY_CHANGED_DURING_CHECKOUT' ||
+      err.code === 'ROOM_UNAVAILABLE' ||
+      String(err.message).includes('DOUBLE_BOOKING_CONFLICT') ||
+      String(err.message).includes('MAINTENANCE_BLOCK_CONFLICT');
+
+    const isPaymentFail =
+      err.code === 'PAYMENT_DECLINED' ||
+      err.code === 'PAYMENT_TOKEN_INVALID' ||
+      err.code === 'INVALID_BANK_REFERENCE';
+
+    const status = isConflict ? 409 : isPaymentFail ? 402 : 400;
+    res.status(status).json({
+      error: err.code || (isConflict ? 'DOUBLE_BOOKING_PREVENTED' : 'BOOKING_FAILED'),
+      message: err.message,
+      alternativeRooms: err.alternativeRooms || []
+    });
+  }
+});
+
+router.post('/payments/webhook', (req, res) => {
+  try {
+    const sig = req.headers['x-payment-signature'];
+    const result = processPaymentWebhook({
+      payload: req.body,
+      signatureHeader: sig,
+      ipAddress: req.ip
+    });
+    res.json(result);
+  } catch (err) {
+    const status = err.code === 'INVALID_WEBHOOK_SIGNATURE' ? 401 : 400;
+    res.status(status).json({
+      error: err.code || 'WEBHOOK_ERROR',
+      message: err.message
+    });
+  }
+});
+
+router.get('/bookings/lookup', (req, res) => {
+  const { bookingReference, email } = req.query;
+  if (!bookingReference) {
+    return res.status(400).json({
+      error: 'MISSING_REFERENCE',
+      message: 'Booking reference is required.'
+    });
+  }
+
+  const reservation = getReservationByReference(bookingReference);
+  if (!reservation) {
+    return res.status(404).json({
+      error: 'RESERVATION_NOT_FOUND',
+      message: 'No reservation found matching that booking reference.'
+    });
+  }
+
+  const isStaff = req.user && ['receptionist', 'finance', 'manager', 'admin'].includes(req.user.role);
+  const isOwnerUser = req.user && (req.user.id === reservation.user_id || req.user.email.toLowerCase() === reservation.guest_email.toLowerCase());
+  const matchesQueryEmail = email && String(email).trim().toLowerCase() === reservation.guest_email.toLowerCase();
+
+  if (!isStaff && !isOwnerUser && !matchesQueryEmail) {
+    return res.status(403).json({
+      error: 'EMAIL_VERIFICATION_REQUIRED',
+      message: 'Please provide the email address used when making this reservation to view its details.'
+    });
+  }
+
+  res.json({ reservation });
+});
+
+router.post('/bookings/:bookingReference/cancel', (req, res) => {
+  try {
+    const reservation = getReservationByReference(req.params.bookingReference);
+    if (!reservation) {
+      return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+    }
+
+    const isStaff = req.user && ['receptionist', 'finance', 'manager', 'admin'].includes(req.user.role);
+    const isOwnerUser = req.user && (req.user.id === reservation.user_id || req.user.email.toLowerCase() === reservation.guest_email.toLowerCase());
+    const matchesBodyEmail = req.body.email && String(req.body.email).trim().toLowerCase() === reservation.guest_email.toLowerCase();
+
+    if (!isStaff && !isOwnerUser && !matchesBodyEmail) {
+      return res.status(403).json({
+        error: 'UNAUTHORIZED_CANCELLATION',
+        message: 'Please verify the reservation email address or sign in to cancel this booking.'
+      });
+    }
+
+    const result = cancelReservation({
+      bookingReference: reservation.booking_reference,
+      reason: req.body.reason || 'Guest requested cancellation',
+      actorId: req.user ? req.user.id : null,
+      actorRole: req.user ? req.user.role : 'guest',
+      actorEmail: req.user ? req.user.email : reservation.guest_email,
+      forceFullRefund: Boolean(isStaff && req.body.forceFullRefund),
+      ipAddress: req.ip
+    });
+
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({
+      error: err.code || 'CANCELLATION_FAILED',
+      message: err.message
+    });
+  }
+});
+
+router.patch('/bookings/:bookingReference/requests', (req, res) => {
+  const reservation = getReservationByReference(req.params.bookingReference);
+  if (!reservation) {
+    return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+  }
+  const isStaff = req.user && ['receptionist', 'finance', 'manager', 'admin'].includes(req.user.role);
+  const isOwnerUser = req.user && (req.user.id === reservation.user_id || req.user.email.toLowerCase() === reservation.guest_email.toLowerCase());
+  const matchesBodyEmail = req.body.email && String(req.body.email).trim().toLowerCase() === reservation.guest_email.toLowerCase();
+
+  if (!isStaff && !isOwnerUser && !matchesBodyEmail) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Verification required to modify reservation preferences.' });
+  }
+
+  const db = getDb();
+  db.prepare(`
+    UPDATE reservations
+    SET special_requests = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(String(req.body.specialRequests || ''), reservation.id);
+
+  res.json({ reservation: getReservationByReference(reservation.booking_reference) });
+});
+
+router.post('/bookings/:bookingReference/modify-dates', (req, res) => {
+  try {
+    const reservation = getReservationByReference(req.params.bookingReference);
+    if (!reservation) {
+      return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+    }
+    const isStaff = req.user && ['receptionist', 'finance', 'manager', 'admin'].includes(req.user.role);
+    const isOwnerUser = req.user && (req.user.id === reservation.user_id || req.user.email.toLowerCase() === reservation.guest_email.toLowerCase());
+    const matchesBodyEmail = req.body.email && String(req.body.email).trim().toLowerCase() === reservation.guest_email.toLowerCase();
+
+    if (!isStaff && !isOwnerUser && !matchesBodyEmail) {
+      return res.status(403).json({
+        error: 'UNAUTHORIZED_MODIFICATION',
+        message: 'Please verify your email address or sign in to modify reservation dates.'
+      });
+    }
+
+    const result = modifyReservationDates({
+      bookingReference: reservation.booking_reference,
+      newCheckIn: req.body.newCheckIn || req.body.checkIn,
+      newCheckOut: req.body.newCheckOut || req.body.checkOut,
+      actorId: req.user ? req.user.id : null,
+      actorRole: req.user ? req.user.role : 'guest',
+      actorEmail: req.user ? req.user.email : reservation.guest_email,
+      ipAddress: req.ip
+    });
+
+    res.json(result);
+  } catch (err) {
+    const isConflict =
+      String(err.message).includes('DOUBLE_BOOKING_CONFLICT') ||
+      String(err.message).includes('MAINTENANCE_BLOCK_CONFLICT');
+    res.status(isConflict ? 409 : 400).json({
+      error: err.code || (isConflict ? 'DATE_MODIFICATION_CONFLICT' : 'MODIFICATION_FAILED'),
+      message: isConflict
+        ? 'The requested new dates overlap with another reservation or maintenance block on this physical room.'
+        : err.message
+    });
+  }
+});
+
+router.put('/bookings/:bookingReference/dossier', (req, res) => {
+  try {
+    const reservation = getReservationByReference(req.params.bookingReference);
+    if (!reservation) {
+      return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+    }
+    const isStaff = req.user && ['receptionist', 'finance', 'manager', 'admin'].includes(req.user.role);
+    const isOwnerUser = req.user && (req.user.id === reservation.user_id || req.user.email.toLowerCase() === reservation.guest_email.toLowerCase());
+    const matchesBodyEmail = req.body.email && String(req.body.email).trim().toLowerCase() === reservation.guest_email.toLowerCase();
+
+    if (!isStaff && !isOwnerUser && !matchesBodyEmail) {
+      return res.status(403).json({
+        error: 'UNAUTHORIZED_DOSSIER_UPDATE',
+        message: 'Please verify your reservation email address or sign in to update your Pre-Arrival Butler Dossier.'
+      });
+    }
+
+    const updated = savePreArrivalDossier({
+      bookingReference: reservation.booking_reference,
+      pillowPreference: req.body.pillowPreference,
+      suiteTemperatureC: req.body.suiteTemperatureC,
+      turndownScent: req.body.turndownScent,
+      arrivalTransportMode: req.body.arrivalTransportMode,
+      flightOrTailNumber: req.body.flightOrTailNumber,
+      estimatedArrivalTime: req.body.estimatedArrivalTime,
+      dietaryAllergies: req.body.dietaryAllergies,
+      butlerNotes: req.body.butlerNotes,
+      actorEmail: req.user ? req.user.email : reservation.guest_email,
+      ipAddress: req.ip
+    });
+
+    res.json({ reservation: updated, preArrivalDossier: updated.preArrivalDossier });
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'DOSSIER_UPDATE_FAILED', message: err.message });
+  }
+});
+
+router.get('/bookings/:bookingReference/folio', (req, res) => {
+  const reservation = getReservationByReference(req.params.bookingReference);
+  if (!reservation) {
+    return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+  }
+  const isStaff = req.user && ['receptionist', 'finance', 'manager', 'admin'].includes(req.user.role);
+  const isOwnerUser = req.user && (req.user.id === reservation.user_id || req.user.email.toLowerCase() === reservation.guest_email.toLowerCase());
+  const matchesQueryEmail = req.query.email && String(req.query.email).trim().toLowerCase() === reservation.guest_email.toLowerCase();
+
+  if (!isStaff && !isOwnerUser && !matchesQueryEmail) {
+    return res.status(403).json({
+      error: 'EMAIL_VERIFICATION_REQUIRED',
+      message: 'Please provide the reservation email address or sign in to view this folio.'
+    });
+  }
+
+  res.json({
+    bookingReference: reservation.booking_reference,
+    roomTotal: reservation.total_amount,
+    incidentalTotal: reservation.incidentalTotal,
+    grandFolioTotal: reservation.grandFolioTotal,
+    amountPaid: reservation.amount_paid,
+    refundedAmount: reservation.refunded_amount,
+    remainingFolioBalance: reservation.remainingFolioBalance,
+    folioCharges: reservation.folioCharges,
+    payments: reservation.payments
+  });
+});
+
+router.post('/bookings/:bookingReference/review', (req, res) => {
+  try {
+    const reservation = getReservationByReference(req.params.bookingReference);
+    if (!reservation) {
+      return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+    }
+    const isStaff = req.user && ['receptionist', 'finance', 'manager', 'admin'].includes(req.user.role);
+    const isOwnerUser = req.user && (req.user.id === reservation.user_id || req.user.email.toLowerCase() === reservation.guest_email.toLowerCase());
+    const matchesBodyEmail = req.body.email && String(req.body.email).trim().toLowerCase() === reservation.guest_email.toLowerCase();
+
+    if (!isStaff && !isOwnerUser && !matchesBodyEmail) {
+      return res.status(403).json({
+        error: 'UNAUTHORIZED_REVIEW',
+        message: 'Please verify your reservation email address to submit a verified stay review.'
+      });
+    }
+
+    const updated = submitGuestReview({
+      bookingReference: reservation.booking_reference,
+      rating: req.body.rating,
+      title: req.body.title,
+      comment: req.body.comment,
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({ reservation: updated, review: updated.guestReview });
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'REVIEW_SUBMIT_FAILED', message: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 4. Authentication & Guest Account Endpoints
+// ---------------------------------------------------------------------------
+
+router.post('/auth/register', (req, res) => {
+  const { email, password, firstName, lastName, phone = '', country = '' } = req.body;
+  if (!email || !password || !firstName || !lastName) {
+    return res.status(400).json({
+      error: 'MISSING_FIELDS',
+      message: 'First name, last name, email, and password are required.'
+    });
+  }
+  if (String(password).length < 8) {
+    return res.status(400).json({
+      error: 'WEAK_PASSWORD',
+      message: 'Password must be at least 8 characters long.'
+    });
+  }
+
+  const db = getDb();
+  const cleanEmail = String(email).trim().toLowerCase();
+  const existing = db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(cleanEmail);
+  if (existing) {
+    return res.status(409).json({
+      error: 'EMAIL_ALREADY_REGISTERED',
+      message: 'An account with this email address already exists.'
+    });
+  }
+
+  const { salt, hash } = hashPassword(password);
+  const result = db.prepare(`
+    INSERT INTO users (email, password_hash, password_salt, first_name, last_name, phone, country, role, loyalty_tier, loyalty_points)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'guest', 'Aurélia Privé', 1000)
+  `).run(cleanEmail, hash, salt, String(firstName).trim(), String(lastName).trim(), String(phone).trim(), String(country).trim());
+
+  const user = db.prepare(
+    'SELECT id, email, first_name, last_name, phone, country, role, loyalty_tier, loyalty_points FROM users WHERE id = ?'
+  ).get(Number(result.lastInsertRowid));
+
+  // Link any existing guest reservations with matching email to this new user account
+  db.prepare('UPDATE reservations SET user_id = ? WHERE LOWER(guest_email) = ? AND user_id IS NULL').run(user.id, cleanEmail);
+
+  const token = createAuthToken(user);
+  res.status(201).json({ token, user });
+});
+
+router.post('/auth/login', (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({
+      error: 'MISSING_CREDENTIALS',
+      message: 'Email and password are required.'
+    });
+  }
+
+  const db = getDb();
+  const userRow = db.prepare('SELECT * FROM users WHERE LOWER(email) = LOWER(?)').get(String(email).trim());
+  if (!userRow || !userRow.is_active) {
+    return res.status(401).json({
+      error: 'INVALID_CREDENTIALS',
+      message: 'Invalid email or password.'
+    });
+  }
+
+  const valid = verifyPassword(password, userRow.password_salt, userRow.password_hash);
+  if (!valid) {
+    return res.status(401).json({
+      error: 'INVALID_CREDENTIALS',
+      message: 'Invalid email or password.'
+    });
+  }
+
+  const user = {
+    id: userRow.id,
+    email: userRow.email,
+    first_name: userRow.first_name,
+    last_name: userRow.last_name,
+    phone: userRow.phone,
+    country: userRow.country,
+    role: userRow.role,
+    loyalty_tier: userRow.loyalty_tier,
+    loyalty_points: userRow.loyalty_points
+  };
+
+  const token = createAuthToken(user);
+  res.json({ token, user });
+});
+
+router.get('/auth/me', requireAuth, (req, res) => {
+  res.json({ user: req.user });
+});
+
+router.get('/guest/bookings', requireAuth, (req, res) => {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT booking_reference
+    FROM reservations
+    WHERE user_id = ? OR LOWER(guest_email) = LOWER(?)
+    ORDER BY id DESC
+  `).all(req.user.id, req.user.email);
+
+  const reservations = rows.map((r) => getReservationByReference(r.booking_reference));
+  res.json({ reservations });
+});
+
+router.get('/guest/notifications', requireAuth, (req, res) => {
+  const db = getDb();
+  const notifications = db.prepare(`
+    SELECT * FROM notifications
+    WHERE user_id = ? OR LOWER(recipient_email) = LOWER(?)
+    ORDER BY id DESC LIMIT 50
+  `).all(req.user.id, req.user.email);
+
+  res.json({ notifications });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Hotel Administration Dashboard Endpoints (Protected by RBAC)
+// ---------------------------------------------------------------------------
+
+router.get('/admin/overview', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  releaseExpiredHolds();
+  const db = getDb();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const totalRooms = db.prepare('SELECT COUNT(*) AS cnt FROM rooms').get().cnt;
+  const availableStatusRooms = db.prepare("SELECT COUNT(*) AS cnt FROM rooms WHERE status = 'available'").get().cnt;
+  const maintenanceStatusRooms = db.prepare("SELECT COUNT(*) AS cnt FROM rooms WHERE status = 'maintenance'").get().cnt;
+
+  const occupiedToday = db.prepare(`
+    SELECT COUNT(DISTINCT room_id) AS cnt
+    FROM reservation_rooms rr
+    JOIN reservations res ON res.id = rr.reservation_id
+    WHERE rr.status = 'active'
+      AND res.status IN ('confirmed', 'checked_in')
+      AND rr.check_in <= ? AND rr.check_out > ?
+  `).get(today, today).cnt;
+
+  const activeHoldsCount = db.prepare(`
+    SELECT COUNT(*) AS cnt FROM room_holds WHERE status = 'ACTIVE' AND expires_at > datetime('now')
+  `).get().cnt;
+
+  const financials = db.prepare(`
+    SELECT
+      COUNT(*) AS totalBookings,
+      SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END) AS activeBookings,
+      SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelledBookings,
+      COALESCE(SUM(CASE WHEN status != 'cancelled' THEN total_amount ELSE 0 END), 0) AS contractedRevenue,
+      COALESCE(SUM(amount_paid), 0) AS grossCollected,
+      COALESCE(SUM(refunded_amount), 0) AS totalRefunded,
+      COALESCE(SUM(CASE WHEN status != 'cancelled' THEN nights * rooms_count ELSE 0 END), 0) AS roomNightsSold
+    FROM reservations
+  `).get();
+
+  const netCollected = roundMoney(financials.grossCollected - financials.totalRefunded);
+  const adr = financials.roomNightsSold > 0
+    ? roundMoney(financials.contractedRevenue / financials.roomNightsSold)
+    : 0;
+  const occupancyRate = totalRooms > 0
+    ? roundMoney((occupiedToday / totalRooms) * 100)
+    : 0;
+  const revPar = totalRooms > 0
+    ? roundMoney(financials.contractedRevenue / Math.max(1, totalRooms))
+    : 0;
+
+  const upcomingArrivals = db.prepare(`
+    SELECT * FROM reservations
+    WHERE status IN ('confirmed', 'checked_in') AND check_in >= ?
+    ORDER BY check_in ASC LIMIT 10
+  `).all(today);
+
+  const revenueByCategory = db.prepare(`
+    SELECT
+      rr.category_name AS categoryName,
+      COUNT(*) AS bookingsCount,
+      ROUND(SUM(rr.room_total), 2) AS categoryRevenue
+    FROM reservation_rooms rr
+    JOIN reservations res ON res.id = rr.reservation_id
+    WHERE rr.status = 'active' AND res.status != 'cancelled'
+    GROUP BY rr.category_name
+    ORDER BY categoryRevenue DESC
+  `).all();
+
+  res.json({
+    metrics: {
+      totalRooms,
+      availableStatusRooms,
+      maintenanceStatusRooms,
+      occupiedToday,
+      activeHoldsCount,
+      occupancyRatePercent: occupancyRate,
+      totalBookings: financials.totalBookings,
+      activeBookings: financials.activeBookings,
+      cancelledBookings: financials.cancelledBookings,
+      contractedRevenue: roundMoney(financials.contractedRevenue),
+      grossCollected: roundMoney(financials.grossCollected),
+      totalRefunded: roundMoney(financials.totalRefunded),
+      netCollected,
+      roomNightsSold: financials.roomNightsSold,
+      averageDailyRate: adr,
+      revPar
+    },
+    upcomingArrivals,
+    revenueByCategory
+  });
+});
+
+// Admin Category CRUD
+router.post('/admin/categories', requireRoles('manager', 'admin'), (req, res) => {
+  const {
+    name,
+    slug,
+    shortDescription,
+    description,
+    basePrice,
+    maxAdults = 2,
+    maxChildren = 1,
+    maxOccupancy = 3,
+    bedType = '1 Emperor King Bed',
+    sizeSqm = 50,
+    sizeSqft = 538,
+    heroImage = '/images/room-deluxe.jpg',
+    amenities = [],
+    facilities = [],
+    includedServices = [],
+    checkInPolicy = 'Check-in from 15:00.',
+    checkOutPolicy = 'Check-out until 12:00.',
+    cancellationPolicy = 'Complimentary cancellation up to 48 hours prior to arrival.',
+    refundPolicy = 'Automatic refund to original payment method.',
+    isFeatured = false
+  } = req.body;
+
+  if (!name || !basePrice) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Category name and basePrice are required.' });
+  }
+
+  const finalSlug = (slug || name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const db = getDb();
+
+  try {
+    const result = db.prepare(`
+      INSERT INTO room_categories (
+        slug, name, short_description, description, base_price,
+        max_adults, max_children, max_occupancy, bed_type,
+        size_sqm, size_sqft, hero_image, gallery_json,
+        amenities_json, facilities_json, included_services_json,
+        check_in_policy, check_out_policy, cancellation_policy, refund_policy, is_featured
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      finalSlug,
+      String(name).trim(),
+      String(shortDescription || name).trim(),
+      String(description || shortDescription || name).trim(),
+      Number(basePrice),
+      Number(maxAdults),
+      Number(maxChildren),
+      Number(maxOccupancy),
+      bedType,
+      Number(sizeSqm),
+      Number(sizeSqft),
+      heroImage,
+      JSON.stringify([heroImage]),
+      JSON.stringify(Array.isArray(amenities) ? amenities : String(amenities).split(',').map((s) => s.trim()).filter(Boolean)),
+      JSON.stringify(Array.isArray(facilities) ? facilities : String(facilities).split(',').map((s) => s.trim()).filter(Boolean)),
+      JSON.stringify(Array.isArray(includedServices) ? includedServices : String(includedServices).split(',').map((s) => s.trim()).filter(Boolean)),
+      checkInPolicy,
+      checkOutPolicy,
+      cancellationPolicy,
+      refundPolicy,
+      isFeatured ? 1 : 0
+    );
+
+    const created = db.prepare('SELECT * FROM room_categories WHERE id = ?').get(Number(result.lastInsertRowid));
+    logAudit({
+      eventType: 'CATEGORY_CREATED',
+      entityType: 'room_category',
+      entityId: created.slug,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      actorEmail: req.user.email,
+      summary: `Created room category "${created.name}" ($${created.base_price}/night).`,
+      details: created,
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({ category: created });
+  } catch (err) {
+    res.status(400).json({ error: 'CATEGORY_CREATE_FAILED', message: err.message });
+  }
+});
+
+router.put('/admin/categories/:id', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const catId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM room_categories WHERE id = ?').get(catId);
+  if (!existing) {
+    return res.status(404).json({ error: 'CATEGORY_NOT_FOUND', message: 'Category not found.' });
+  }
+
+  const {
+    name = existing.name,
+    shortDescription = existing.short_description,
+    description = existing.description,
+    basePrice = existing.base_price,
+    maxAdults = existing.max_adults,
+    maxChildren = existing.max_children,
+    maxOccupancy = existing.max_occupancy,
+    bedType = existing.bed_type,
+    sizeSqm = existing.size_sqm,
+    sizeSqft = existing.size_sqft,
+    heroImage = existing.hero_image,
+    isFeatured = existing.is_featured
+  } = req.body;
+
+  db.prepare(`
+    UPDATE room_categories
+    SET name = ?, short_description = ?, description = ?, base_price = ?,
+        max_adults = ?, max_children = ?, max_occupancy = ?, bed_type = ?,
+        size_sqm = ?, size_sqft = ?, hero_image = ?, is_featured = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    name,
+    shortDescription,
+    description,
+    Number(basePrice),
+    Number(maxAdults),
+    Number(maxChildren),
+    Number(maxOccupancy),
+    bedType,
+    Number(sizeSqm),
+    Number(sizeSqft),
+    heroImage,
+    isFeatured ? 1 : 0,
+    catId
+  );
+
+  const updated = db.prepare('SELECT * FROM room_categories WHERE id = ?').get(catId);
+  logAudit({
+    eventType: 'CATEGORY_UPDATED',
+    entityType: 'room_category',
+    entityId: updated.slug,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Updated room category "${updated.name}".`,
+    details: updated,
+    ipAddress: req.ip
+  });
+
+  res.json({ category: updated });
+});
+
+router.delete('/admin/categories/:id', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const catId = Number(req.params.id);
+  const roomsUsing = db.prepare('SELECT COUNT(*) AS cnt FROM rooms WHERE category_id = ?').get(catId).cnt;
+  if (roomsUsing > 0) {
+    return res.status(400).json({
+      error: 'CATEGORY_HAS_ROOMS',
+      message: `Cannot delete category while ${roomsUsing} physical room(s) are assigned to it.`
+    });
+  }
+  db.prepare('DELETE FROM room_categories WHERE id = ?').run(catId);
+  res.json({ deleted: true });
+});
+
+// Admin Physical Rooms CRUD
+router.post('/admin/rooms', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const {
+    roomNumber,
+    uniqueCode,
+    name,
+    categoryId,
+    floor = 1,
+    wing = 'Main Palace Wing',
+    viewType = 'Sanctuary View',
+    pricePerNight,
+    maxAdults,
+    maxChildren,
+    maxOccupancy,
+    bedType,
+    sizeSqm,
+    sizeSqft,
+    heroImage,
+    amenities,
+    facilities,
+    includedServices,
+    checkInPolicy,
+    checkOutPolicy,
+    cancellationPolicy,
+    refundPolicy,
+    isAccessible = false,
+    status = 'available'
+  } = req.body;
+
+  if (!roomNumber || !name || !categoryId) {
+    return res.status(400).json({
+      error: 'MISSING_ROOM_FIELDS',
+      message: 'Room number, room name, and categoryId are required.'
+    });
+  }
+
+  const cat = db.prepare('SELECT * FROM room_categories WHERE id = ?').get(Number(categoryId));
+  if (!cat) {
+    return res.status(404).json({ error: 'CATEGORY_NOT_FOUND', message: 'Selected room category does not exist.' });
+  }
+
+  const finalCode = uniqueCode || `AUR-RM-${String(roomNumber).toUpperCase()}`;
+
+  try {
+    const result = db.prepare(`
+      INSERT INTO rooms (
+        room_number, unique_code, name, category_id, floor, wing, view_type,
+        price_per_night, max_adults, max_children, max_occupancy, bed_type,
+        size_sqm, size_sqft, hero_image, gallery_json, amenities_json,
+        facilities_json, included_services_json, check_in_policy, check_out_policy,
+        cancellation_policy, refund_policy, is_accessible, is_sample_inventory, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    `).run(
+      String(roomNumber).trim(),
+      String(finalCode).trim(),
+      String(name).trim(),
+      cat.id,
+      Number(floor),
+      wing,
+      viewType,
+      Number(pricePerNight || cat.base_price),
+      Number(maxAdults !== undefined ? maxAdults : cat.max_adults),
+      Number(maxChildren !== undefined ? maxChildren : cat.max_children),
+      Number(maxOccupancy !== undefined ? maxOccupancy : cat.max_occupancy),
+      bedType || cat.bed_type,
+      Number(sizeSqm || cat.size_sqm),
+      Number(sizeSqft || cat.size_sqft),
+      heroImage || cat.hero_image,
+      cat.gallery_json,
+      amenities ? JSON.stringify(Array.isArray(amenities) ? amenities : String(amenities).split(',').map((s) => s.trim()).filter(Boolean)) : cat.amenities_json,
+      facilities ? JSON.stringify(Array.isArray(facilities) ? facilities : String(facilities).split(',').map((s) => s.trim()).filter(Boolean)) : cat.facilities_json,
+      includedServices ? JSON.stringify(Array.isArray(includedServices) ? includedServices : String(includedServices).split(',').map((s) => s.trim()).filter(Boolean)) : cat.included_services_json,
+      checkInPolicy || cat.check_in_policy,
+      checkOutPolicy || cat.check_out_policy,
+      cancellationPolicy || cat.cancellation_policy,
+      refundPolicy || cat.refund_policy,
+      isAccessible ? 1 : 0,
+      status
+    );
+
+    const createdRoom = db.prepare(`
+      SELECT r.*, c.name AS category_name, c.slug AS category_slug
+      FROM rooms r JOIN room_categories c ON c.id = r.category_id
+      WHERE r.id = ?
+    `).get(Number(result.lastInsertRowid));
+
+    logAudit({
+      eventType: 'ROOM_CREATED',
+      entityType: 'room',
+      entityId: createdRoom.room_number,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      actorEmail: req.user.email,
+      summary: `Added physical room #${createdRoom.room_number} (${createdRoom.name}) at $${createdRoom.price_per_night}/night.`,
+      details: createdRoom,
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({ room: formatRoomRecord(createdRoom) });
+  } catch (err) {
+    res.status(400).json({ error: 'ROOM_CREATE_FAILED', message: err.message });
+  }
+});
+
+router.put('/admin/rooms/:id', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const roomId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+  if (!existing) {
+    return res.status(404).json({ error: 'ROOM_NOT_FOUND', message: 'Room not found.' });
+  }
+
+  const {
+    roomNumber = existing.room_number,
+    name = existing.name,
+    categoryId = existing.category_id,
+    floor = existing.floor,
+    wing = existing.wing,
+    viewType = existing.view_type,
+    pricePerNight = existing.price_per_night,
+    maxAdults = existing.max_adults,
+    maxChildren = existing.max_children,
+    maxOccupancy = existing.max_occupancy,
+    bedType = existing.bed_type,
+    sizeSqm = existing.size_sqm,
+    sizeSqft = existing.size_sqft,
+    heroImage = existing.hero_image,
+    status = existing.status,
+    notes = existing.notes
+  } = req.body;
+
+  db.prepare(`
+    UPDATE rooms
+    SET room_number = ?, name = ?, category_id = ?, floor = ?, wing = ?, view_type = ?,
+        price_per_night = ?, max_adults = ?, max_children = ?, max_occupancy = ?,
+        bed_type = ?, size_sqm = ?, size_sqft = ?, hero_image = ?, status = ?, notes = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    String(roomNumber).trim(),
+    String(name).trim(),
+    Number(categoryId),
+    Number(floor),
+    wing,
+    viewType,
+    Number(pricePerNight),
+    Number(maxAdults),
+    Number(maxChildren),
+    Number(maxOccupancy),
+    bedType,
+    Number(sizeSqm),
+    Number(sizeSqft),
+    heroImage,
+    status,
+    notes,
+    roomId
+  );
+
+  const updated = db.prepare(`
+    SELECT r.*, c.name AS category_name, c.slug AS category_slug
+    FROM rooms r JOIN room_categories c ON c.id = r.category_id
+    WHERE r.id = ?
+  `).get(roomId);
+
+  logAudit({
+    eventType: 'ROOM_UPDATED',
+    entityType: 'room',
+    entityId: updated.room_number,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Updated room #${updated.room_number} (${updated.name}) — status: ${updated.status}, price: $${updated.price_per_night}.`,
+    details: updated,
+    ipAddress: req.ip
+  });
+
+  res.json({ room: formatRoomRecord(updated) });
+});
+
+router.delete('/admin/rooms/:id', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const roomId = Number(req.params.id);
+  const activeResCount = db.prepare(`
+    SELECT COUNT(*) AS cnt FROM reservation_rooms WHERE room_id = ? AND status = 'active'
+  `).get(roomId).cnt;
+
+  if (activeResCount > 0) {
+    return res.status(400).json({
+      error: 'ROOM_HAS_ACTIVE_RESERVATIONS',
+      message: 'Cannot remove a physical room that has active confirmed reservations. Cancel or reassign reservations first.'
+    });
+  }
+
+  db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+  logAudit({
+    eventType: 'ROOM_DELETED',
+    entityType: 'room',
+    entityId: String(roomId),
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Deleted physical room ID ${roomId}.`,
+    ipAddress: req.ip
+  });
+  res.json({ deleted: true });
+});
+
+// Maintenance Blocks & Availability Calendar
+router.get('/admin/tape-chart', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  const tapeChart = getFrontDeskTapeChart({
+    startDate: req.query.startDate || null,
+    days: Number(req.query.days || 14)
+  });
+  res.json(tapeChart);
+});
+
+router.patch('/admin/rooms/:id/housekeeping', requireRoles('receptionist', 'manager', 'admin'), (req, res) => {
+  const { housekeepingStatus } = req.body;
+  const validStatuses = ['clean_inspected', 'turndown_complete', 'dirty_turnover', 'deep_cleaning'];
+  if (!validStatuses.includes(housekeepingStatus)) {
+    return res.status(400).json({
+      error: 'INVALID_HOUSEKEEPING_STATUS',
+      message: `housekeepingStatus must be one of: ${validStatuses.join(', ')}`
+    });
+  }
+
+  const db = getDb();
+  const roomId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+  if (!existing) {
+    return res.status(404).json({ error: 'ROOM_NOT_FOUND', message: 'Room not found.' });
+  }
+
+  db.prepare(`
+    UPDATE rooms
+    SET housekeeping_status = ?, housekeeping_updated_at = datetime('now'), updated_at = datetime('now')
+    WHERE id = ?
+  `).run(housekeepingStatus, roomId);
+
+  const updated = db.prepare(`
+    SELECT r.*, c.name AS category_name, c.slug AS category_slug
+    FROM rooms r JOIN room_categories c ON c.id = r.category_id
+    WHERE r.id = ?
+  `).get(roomId);
+
+  logAudit({
+    eventType: 'HOUSEKEEPING_STATUS_UPDATED',
+    entityType: 'room',
+    entityId: updated.room_number,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Updated Room #${updated.room_number} housekeeping status to ${housekeepingStatus}.`,
+    details: { roomId, roomNumber: updated.room_number, housekeepingStatus },
+    ipAddress: req.ip
+  });
+
+  res.json({ room: formatRoomRecord(updated) });
+});
+
+router.get('/admin/calendar', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  releaseExpiredHolds();
+  const db = getDb();
+  const rooms = db.prepare(`
+    SELECT r.id, r.room_number, r.unique_code, r.name, r.status, r.housekeeping_status, r.price_per_night, c.name AS category_name
+    FROM rooms r
+    JOIN room_categories c ON c.id = r.category_id
+    ORDER BY c.sort_order ASC, r.room_number ASC
+  `).all();
+
+  const reservations = db.prepare(`
+    SELECT rr.*, res.booking_reference, res.guest_first_name, res.guest_last_name, res.status AS reservation_status, res.payment_status
+    FROM reservation_rooms rr
+    JOIN reservations res ON res.id = rr.reservation_id
+    WHERE rr.status = 'active' AND res.status != 'cancelled'
+    ORDER BY rr.check_in ASC
+  `).all();
+
+  const maintenanceBlocks = db.prepare(`
+    SELECT mb.*, r.room_number, r.name AS room_name
+    FROM maintenance_blocks mb
+    JOIN rooms r ON r.id = mb.room_id
+    WHERE mb.status = 'active'
+    ORDER BY mb.start_date ASC
+  `).all();
+
+  const activeHolds = db.prepare(`
+    SELECT rh.*, r.room_number, r.name AS room_name
+    FROM room_holds rh
+    JOIN rooms r ON r.id = rh.room_id
+    WHERE rh.status = 'ACTIVE' AND rh.expires_at > datetime('now')
+    ORDER BY rh.check_in ASC
+  `).all();
+
+  res.json({
+    rooms,
+    reservations,
+    maintenanceBlocks,
+    activeHolds
+  });
+});
+
+router.post('/admin/maintenance', requireRoles('receptionist', 'manager', 'admin'), (req, res) => {
+  const { roomId, startDate, endDate, reason = 'Scheduled Maintenance & Sanctuary Refurbishment' } = req.body;
+  if (!roomId || !startDate || !endDate) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'roomId, startDate, and endDate are required.' });
+  }
+
+  const db = getDb();
+  try {
+    const result = db.prepare(`
+      INSERT INTO maintenance_blocks (room_id, start_date, end_date, reason, created_by, status)
+      VALUES (?, ?, ?, ?, ?, 'active')
+    `).run(Number(roomId), startDate, endDate, reason, `${req.user.first_name} ${req.user.last_name}`);
+
+    const block = db.prepare('SELECT * FROM maintenance_blocks WHERE id = ?').get(Number(result.lastInsertRowid));
+    logAudit({
+      eventType: 'MAINTENANCE_BLOCK_CREATED',
+      entityType: 'maintenance_block',
+      entityId: String(block.id),
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      actorEmail: req.user.email,
+      summary: `Blocked room ID ${roomId} for maintenance (${startDate} to ${endDate}): ${reason}`,
+      details: block,
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({ maintenanceBlock: block });
+  } catch (err) {
+    res.status(409).json({
+      error: 'MAINTENANCE_BLOCK_CONFLICT',
+      message: err.message
+    });
+  }
+});
+
+router.delete('/admin/maintenance/:id', requireRoles('receptionist', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  db.prepare("UPDATE maintenance_blocks SET status = 'cancelled' WHERE id = ?").run(Number(req.params.id));
+  logAudit({
+    eventType: 'MAINTENANCE_BLOCK_REMOVED',
+    entityType: 'maintenance_block',
+    entityId: String(req.params.id),
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Removed maintenance block ID ${req.params.id}.`,
+    ipAddress: req.ip
+  });
+  res.json({ cancelled: true });
+});
+
+// Admin Reservations, Walk-In Creation, Check-In/Out, Payment Confirmation & Refunds
+router.get('/admin/reservations', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  let sql = 'SELECT booking_reference FROM reservations WHERE 1=1';
+  const params = [];
+
+  if (req.query.status && req.query.status !== 'all') {
+    sql += ' AND status = ?';
+    params.push(req.query.status);
+  }
+  if (req.query.search) {
+    sql += ' AND (booking_reference LIKE ? OR guest_email LIKE ? OR guest_last_name LIKE ? OR guest_first_name LIKE ?)';
+    const q = `%${req.query.search}%`;
+    params.push(q, q, q, q);
+  }
+  sql += ' ORDER BY id DESC LIMIT 100';
+
+  const refs = db.prepare(sql).all(...params);
+  const reservations = refs.map((r) => getReservationByReference(r.booking_reference));
+  res.json({ reservations });
+});
+
+router.post('/admin/reservations/walk-in', requireRoles('receptionist', 'manager', 'admin'), (req, res) => {
+  try {
+    const {
+      roomIds,
+      roomId,
+      checkIn,
+      checkOut,
+      adults = 2,
+      children = 0,
+      guestFirstName,
+      guestLastName,
+      guestEmail,
+      guestPhone,
+      guestCountry = '',
+      specialRequests = '',
+      selectedAddons = [],
+      promoCode = '',
+      paymentMethod = 'pay_at_hotel',
+      paymentPlan = 'full'
+    } = req.body;
+
+    const ids = Array.isArray(roomIds) ? roomIds : roomId ? [roomId] : [];
+    const reservation = confirmReservation({
+      roomIds: ids,
+      checkIn,
+      checkOut,
+      adults,
+      children,
+      guestFirstName,
+      guestLastName,
+      guestEmail,
+      guestPhone,
+      guestCountry,
+      specialRequests,
+      selectedAddons,
+      promoCode,
+      paymentMethod,
+      paymentPlan,
+      paymentToken: 'tok_staff_authorised',
+      bankReference: 'STAFF-WALKIN-VERIFIED',
+      bookingSource: 'walk_in',
+      bookedByStaffId: req.user.id,
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({ reservation });
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'WALKIN_FAILED', message: err.message });
+  }
+});
+
+router.post('/admin/reservations/:bookingReference/status', requireRoles('receptionist', 'manager', 'admin'), (req, res) => {
+  const { status } = req.body;
+  if (!['confirmed', 'checked_in', 'checked_out'].includes(status)) {
+    return res.status(400).json({ error: 'INVALID_STATUS', message: 'Status must be confirmed, checked_in, or checked_out.' });
+  }
+
+  const existing = getReservationByReference(req.params.bookingReference);
+  if (!existing) {
+    return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+  }
+
+  const db = getDb();
+
+  // Enforce Housekeeping Readiness before allowing guest Check-In
+  if (status === 'checked_in') {
+    const unreadyRooms = (existing.rooms || []).filter(
+      (rm) => !['clean_inspected', 'turndown_complete'].includes(rm.housekeeping_status || 'clean_inspected')
+    );
+    if (unreadyRooms.length > 0) {
+      const listStr = unreadyRooms.map((r) => `#${r.room_number} (${r.housekeeping_status})`).join(', ');
+      return res.status(409).json({
+        error: 'HOUSEKEEPING_NOT_READY',
+        message: `Cannot check in guest until housekeeping marks room(s) ${listStr} as Clean & Inspected.`
+      });
+    }
+  }
+
+  db.prepare("UPDATE reservations SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, existing.id);
+
+  // When checking out, automatically transition physical rooms to 'dirty_turnover' for housekeeping
+  if (status === 'checked_out') {
+    const markDirty = db.prepare("UPDATE rooms SET housekeeping_status = 'dirty_turnover', housekeeping_updated_at = datetime('now') WHERE id = ?");
+    for (const rm of existing.rooms || []) {
+      markDirty.run(rm.room_id);
+    }
+  }
+
+  logAudit({
+    eventType: `RESERVATION_${status.toUpperCase()}`,
+    entityType: 'reservation',
+    entityId: existing.booking_reference,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Updated reservation ${existing.booking_reference} status to ${status}.`,
+    ipAddress: req.ip
+  });
+
+  res.json({ reservation: getReservationByReference(existing.booking_reference) });
+});
+
+router.post('/admin/reservations/:bookingReference/folio', requireRoles('receptionist', 'finance', 'manager', 'admin'), (req, res) => {
+  try {
+    const updated = addFolioCharge({
+      bookingReference: req.params.bookingReference,
+      category: req.body.category || 'In-Suite Dining',
+      description: req.body.description,
+      unitPrice: req.body.unitPrice,
+      quantity: req.body.quantity || 1,
+      postedBy: `${req.user.first_name} ${req.user.last_name} (${req.user.role})`,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      actorEmail: req.user.email,
+      ipAddress: req.ip
+    });
+    res.status(201).json({ reservation: updated });
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'FOLIO_POST_FAILED', message: err.message });
+  }
+});
+
+router.delete('/admin/reservations/:bookingReference/folio/:chargeId', requireRoles('finance', 'manager', 'admin'), (req, res) => {
+  try {
+    const updated = removeFolioCharge({
+      bookingReference: req.params.bookingReference,
+      chargeId: Number(req.params.chargeId),
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      actorEmail: req.user.email,
+      ipAddress: req.ip
+    });
+    res.json({ reservation: updated });
+  } catch (err) {
+    res.status(400).json({ error: err.code || 'FOLIO_DELETE_FAILED', message: err.message });
+  }
+});
+
+router.post('/admin/reservations/:bookingReference/confirm-payment', requireRoles('finance', 'manager', 'admin', 'receptionist'), (req, res) => {
+  const existing = getReservationByReference(req.params.bookingReference);
+  if (!existing) {
+    return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+  }
+
+  const remainingBalance = roundMoney(Math.max(0, existing.grandFolioTotal - existing.amount_paid));
+  const amountToRecord = req.body.amount !== undefined ? roundMoney(Number(req.body.amount)) : remainingBalance;
+
+  if (amountToRecord <= 0) {
+    return res.status(400).json({ error: 'ALREADY_PAID', message: 'Reservation & folio balance is already paid in full.' });
+  }
+
+  const db = getDb();
+  const newPaid = roundMoney(existing.amount_paid + amountToRecord);
+  const newPaymentStatus = newPaid >= existing.grandFolioTotal ? 'paid' : 'deposit_paid';
+  const payRef = generatePaymentReference('STF');
+  const invNum = generateInvoiceNumber();
+
+  db.prepare(`
+    UPDATE reservations
+    SET amount_paid = ?, payment_status = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(newPaid, newPaymentStatus, existing.id);
+
+  db.prepare(`
+    INSERT INTO payments (
+      payment_reference, invoice_number, reservation_id, booking_reference,
+      amount, currency, display_currency, display_amount,
+      payment_method, payment_type, status, gateway_response_json, verified_at
+    ) VALUES (?, ?, ?, ?, ?, 'USD', ?, ?, ?, 'balance', 'succeeded', ?, datetime('now'))
+  `).run(
+    payRef,
+    invNum,
+    existing.id,
+    existing.booking_reference,
+    amountToRecord,
+    existing.currency,
+    roundMoney(amountToRecord * existing.exchange_rate),
+    req.body.paymentMethod || existing.payment_method,
+    JSON.stringify({ verifiedByStaff: req.user.email, amountToRecord })
+  );
+
+  sendNotification({
+    templateCode: 'PAYMENT_RECEIPT',
+    reservationId: existing.id,
+    userId: existing.user_id,
+    recipientEmail: existing.guest_email,
+    recipientPhone: existing.guest_phone,
+    variables: {
+      guest_name: `${existing.guest_first_name} ${existing.guest_last_name}`,
+      booking_reference: existing.booking_reference,
+      invoice_number: invNum,
+      payment_reference: payRef,
+      amount_formatted: `$${amountToRecord.toFixed(2)} USD`,
+      payment_method: (req.body.paymentMethod || existing.payment_method).toUpperCase()
+    }
+  });
+
+  logAudit({
+    eventType: 'STAFF_PAYMENT_CONFIRMED',
+    entityType: 'reservation',
+    entityId: existing.booking_reference,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Confirmed payment of $${amountToRecord.toFixed(2)} USD for reservation ${existing.booking_reference} (Ref: ${payRef}).`,
+    ipAddress: req.ip
+  });
+
+  res.json({ reservation: getReservationByReference(existing.booking_reference) });
+});
+
+router.post('/admin/reservations/:bookingReference/refund', requireRoles('finance', 'manager', 'admin'), (req, res) => {
+  const existing = getReservationByReference(req.params.bookingReference);
+  if (!existing) {
+    return res.status(404).json({ error: 'RESERVATION_NOT_FOUND', message: 'Reservation not found.' });
+  }
+
+  const maxRefundable = roundMoney(Math.max(0, existing.amount_paid - existing.refunded_amount));
+  const refundAmount = req.body.amount !== undefined ? roundMoney(Number(req.body.amount)) : maxRefundable;
+
+  if (refundAmount <= 0 || refundAmount > maxRefundable) {
+    return res.status(400).json({
+      error: 'INVALID_REFUND_AMOUNT',
+      message: `Refund amount must be between $0.01 and $${maxRefundable.toFixed(2)}.`
+    });
+  }
+
+  const db = getDb();
+  const newRefundedTotal = roundMoney(existing.refunded_amount + refundAmount);
+  const newStatus = newRefundedTotal >= existing.amount_paid ? 'refunded' : 'partially_refunded';
+  const refundRef = generatePaymentReference('RFD');
+
+  db.prepare(`
+    UPDATE reservations
+    SET refunded_amount = ?, payment_status = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(newRefundedTotal, newStatus, existing.id);
+
+  db.prepare(`
+    INSERT INTO payments (
+      payment_reference, invoice_number, reservation_id, booking_reference,
+      amount, currency, display_currency, display_amount,
+      payment_method, payment_type, status, gateway_response_json, verified_at
+    ) VALUES (?, ?, ?, ?, ?, 'USD', ?, ?, ?, 'refund', 'refunded', ?, datetime('now'))
+  `).run(
+    refundRef,
+    generateInvoiceNumber(),
+    existing.id,
+    existing.booking_reference,
+    -refundAmount,
+    existing.currency,
+    roundMoney(-refundAmount * existing.exchange_rate),
+    existing.payment_method,
+    JSON.stringify({ authorisedBy: req.user.email, reason: req.body.reason || 'Authorised refund' })
+  );
+
+  sendNotification({
+    templateCode: 'REFUND_PROCESSED',
+    reservationId: existing.id,
+    userId: existing.user_id,
+    recipientEmail: existing.guest_email,
+    recipientPhone: existing.guest_phone,
+    variables: {
+      guest_name: `${existing.guest_first_name} ${existing.guest_last_name}`,
+      booking_reference: existing.booking_reference,
+      refund_formatted: `$${refundAmount.toFixed(2)} USD`,
+      payment_reference: refundRef
+    }
+  });
+
+  logAudit({
+    eventType: 'REFUND_ISSUED',
+    entityType: 'reservation',
+    entityId: existing.booking_reference,
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Issued refund of $${refundAmount.toFixed(2)} USD for ${existing.booking_reference} (Ref: ${refundRef}).`,
+    ipAddress: req.ip
+  });
+
+  res.json({
+    refundReference: refundRef,
+    refundAmount,
+    reservation: getReservationByReference(existing.booking_reference)
+  });
+});
+
+// Seasonal Rates & Promo Codes Management
+router.post('/admin/seasonal-rates', requireRoles('finance', 'manager', 'admin'), (req, res) => {
+  const { name, categoryId = null, startDate, endDate, multiplier = 1.2, badgeText = '' } = req.body;
+  if (!name || !startDate || !endDate) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'name, startDate, and endDate are required.' });
+  }
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO seasonal_rates (name, category_id, start_date, end_date, multiplier, badge_text, is_active)
+    VALUES (?, ?, ?, ?, ?, ?, 1)
+  `).run(name, categoryId ? Number(categoryId) : null, startDate, endDate, Number(multiplier), badgeText || `${name} (${Math.round((Number(multiplier) - 1) * 100)}%)`);
+
+  res.status(201).json({
+    seasonalRate: db.prepare('SELECT * FROM seasonal_rates WHERE id = ?').get(Number(result.lastInsertRowid))
+  });
+});
+
+router.delete('/admin/seasonal-rates/:id', requireRoles('finance', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  db.prepare('DELETE FROM seasonal_rates WHERE id = ?').run(Number(req.params.id));
+  res.json({ deleted: true });
+});
+
+router.post('/admin/promo-codes', requireRoles('finance', 'manager', 'admin'), (req, res) => {
+  const {
+    code,
+    description,
+    discountType = 'percent',
+    discountValue = 10,
+    minNights = 1,
+    minAmount = 0,
+    validFrom = '2026-01-01',
+    validUntil = '2027-12-31'
+  } = req.body;
+
+  if (!code || !description) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Promo code and description are required.' });
+  }
+
+  const db = getDb();
+  try {
+    const result = db.prepare(`
+      INSERT INTO promo_codes (code, description, discount_type, discount_value, min_nights, min_amount, valid_from, valid_until)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(String(code).trim().toUpperCase(), description, discountType, Number(discountValue), Number(minNights), Number(minAmount), validFrom, validUntil);
+
+    res.status(201).json({
+      promoCode: db.prepare('SELECT * FROM promo_codes WHERE id = ?').get(Number(result.lastInsertRowid))
+    });
+  } catch (err) {
+    res.status(400).json({ error: 'PROMO_CREATE_FAILED', message: err.message });
+  }
+});
+
+// Hotel Settings Configuration
+router.put('/admin/settings', requireRoles('finance', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const current = getHotelSettings();
+
+  const {
+    hotelName = current.hotel_name,
+    environmentMode = current.environment_mode,
+    environmentBanner = current.environment_banner,
+    timezone = current.timezone,
+    checkInTime = current.check_in_time,
+    checkOutTime = current.check_out_time,
+    sameDayTurnover = current.same_day_turnover,
+    taxRatePercent = current.tax_rate_percent,
+    serviceFeePercent = current.service_fee_percent,
+    cityLevyPerNight = current.city_levy_per_night,
+    depositPercent = current.deposit_percent,
+    holdDurationMinutes = current.hold_duration_minutes,
+    freeCancellationHours = current.free_cancellation_hours,
+    lateCancellationPenaltyPercent = current.late_cancellation_penalty_percent,
+    allowPayAtHotel = current.allow_pay_at_hotel
+  } = req.body;
+
+  db.prepare(`
+    UPDATE hotel_settings
+    SET hotel_name = ?, environment_mode = ?, environment_banner = ?, timezone = ?,
+        check_in_time = ?, check_out_time = ?, same_day_turnover = ?,
+        tax_rate_percent = ?, service_fee_percent = ?, city_levy_per_night = ?,
+        deposit_percent = ?, hold_duration_minutes = ?, free_cancellation_hours = ?,
+        late_cancellation_penalty_percent = ?, allow_pay_at_hotel = ?,
+        updated_at = datetime('now')
+    WHERE id = 1
+  `).run(
+    hotelName,
+    environmentMode,
+    environmentBanner,
+    timezone,
+    checkInTime,
+    checkOutTime,
+    sameDayTurnover ? 1 : 0,
+    Number(taxRatePercent),
+    Number(serviceFeePercent),
+    Number(cityLevyPerNight),
+    Number(depositPercent),
+    Number(holdDurationMinutes),
+    Number(freeCancellationHours),
+    Number(lateCancellationPenaltyPercent),
+    allowPayAtHotel ? 1 : 0
+  );
+
+  const updated = getHotelSettings();
+  logAudit({
+    eventType: 'SETTINGS_UPDATED',
+    entityType: 'hotel_settings',
+    entityId: '1',
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Updated hotel policies and tax/deposit settings.`,
+    details: updated,
+    ipAddress: req.ip
+  });
+
+  res.json({ settings: updated });
+});
+
+// Staff & Users Management (Admin only)
+router.get('/admin/users', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const users = db.prepare(`
+    SELECT id, email, first_name, last_name, phone, country, role, loyalty_tier, loyalty_points, is_active, created_at
+    FROM users ORDER BY id ASC
+  `).all();
+  res.json({ users });
+});
+
+router.patch('/admin/users/:id/role', requireRoles('admin'), (req, res) => {
+  const { role, isActive } = req.body;
+  const validRoles = ['guest', 'receptionist', 'finance', 'manager', 'admin'];
+  if (role && !validRoles.includes(role)) {
+    return res.status(400).json({ error: 'INVALID_ROLE', message: 'Invalid role specified.' });
+  }
+
+  const db = getDb();
+  const targetId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
+  if (!existing) {
+    return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User not found.' });
+  }
+
+  db.prepare(`
+    UPDATE users
+    SET role = ?, is_active = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(role || existing.role, isActive !== undefined ? (isActive ? 1 : 0) : existing.is_active, targetId);
+
+  logAudit({
+    eventType: 'USER_ROLE_UPDATED',
+    entityType: 'user',
+    entityId: String(targetId),
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actorEmail: req.user.email,
+    summary: `Updated user ${existing.email} role to ${role || existing.role}.`,
+    ipAddress: req.ip
+  });
+
+  res.json({
+    user: db.prepare('SELECT id, email, first_name, last_name, role, is_active FROM users WHERE id = ?').get(targetId)
+  });
+});
+
+// Notification Templates Management
+router.get('/admin/templates', requireRoles('manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const templates = db.prepare('SELECT * FROM notification_templates ORDER BY id ASC').all();
+  const recentNotifications = db.prepare('SELECT * FROM notifications ORDER BY id DESC LIMIT 30').all();
+  res.json({ templates, recentNotifications });
+});
+
+router.put('/admin/templates/:code', requireRoles('manager', 'admin'), (req, res) => {
+  const { subjectTemplate, bodyTemplate, channel = 'email' } = req.body;
+  const db = getDb();
+  db.prepare(`
+    UPDATE notification_templates
+    SET subject_template = ?, body_template = ?, channel = ?, updated_at = datetime('now')
+    WHERE code = ?
+  `).run(subjectTemplate, bodyTemplate, channel, req.params.code);
+
+  res.json({
+    template: db.prepare('SELECT * FROM notification_templates WHERE code = ?').get(req.params.code)
+  });
+});
+
+// Audit Logs, Reports Export & Backup
+router.get('/admin/audit-logs', requireRoles('finance', 'manager', 'admin'), (req, res) => {
+  const logs = getAuditLogs({
+    limit: req.query.limit || 100,
+    eventType: req.query.eventType || null
+  });
+  res.json({ auditLogs: logs });
+});
+
+router.get('/admin/reports/export', requireRoles('finance', 'manager', 'admin'), (req, res) => {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT
+      booking_reference, guest_first_name, guest_last_name, guest_email,
+      check_in, check_out, nights, rooms_count, status, payment_status,
+      payment_method, payment_plan, total_amount, amount_paid, refunded_amount, created_at
+    FROM reservations
+    ORDER BY id DESC
+  `).all();
+
+  if (req.query.format === 'csv') {
+    const headers = [
+      'booking_reference', 'guest_first_name', 'guest_last_name', 'guest_email',
+      'check_in', 'check_out', 'nights', 'rooms_count', 'status', 'payment_status',
+      'payment_method', 'payment_plan', 'total_amount', 'amount_paid', 'refunded_amount', 'created_at'
+    ];
+    const csvLines = [
+      headers.join(','),
+      ...rows.map((r) =>
+        headers.map((h) => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(',')
+      )
+    ];
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="maison-aurelia-reservations-report.csv"');
+    return res.send(csvLines.join('\n'));
+  }
+
+  res.json({ exportedAt: new Date().toISOString(), count: rows.length, reservations: rows });
+});
+
+router.post('/admin/backup', requireRoles('admin'), (req, res) => {
+  try {
+    const info = backupDatabase();
+    logAudit({
+      eventType: 'DATABASE_BACKUP_CREATED',
+      entityType: 'database',
+      entityId: info.backupPath,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      actorEmail: req.user.email,
+      summary: `Created database backup snapshot (${info.sizeBytes} bytes).`,
+      details: info,
+      ipAddress: req.ip
+    });
+    res.json({ backup: info });
+  } catch (err) {
+    res.status(500).json({ error: 'BACKUP_FAILED', message: err.message });
+  }
+});
+
+module.exports = router;
